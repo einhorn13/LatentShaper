@@ -1,0 +1,201 @@
+{
+    "rules": [
+        {
+            "id": "psp_prompt_fragile",
+            "severity": "warning",
+            "condition": "mid_dominance > 1.8 and magnitude > 0.005",
+            "title": "Profile: Prompt-Fragile",
+            "description": "LoRA доминирует над семантикой промпта. Модель может игнорировать изменения цвета или окружения, заданные текстом.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "eq_mid": 0.7,
+                "dare_enabled": true,
+                "dare_rate": 0.2
+            }
+        },
+        {
+            "id": "psp_style_biased",
+            "severity": "info",
+            "condition": "energy.get('OUT', 0) > energy.get('MID', 0) * 1.4",
+            "title": "Profile: Style-Biased",
+            "description": "Выраженный упор на визуальный стиль. Хорошо сохраняет эстетику, но слабо меняет анатомию или ключевые концепты.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "eq_out": 0.8,
+                "fft_cutoff": 0.85
+            }
+        },
+        {
+            "id": "psp_concept_heavy",
+            "severity": "info",
+            "condition": "mid_dominance >= 1.1 and mid_dominance <= 1.8",
+            "title": "Profile: Concept-Heavy",
+            "description": "Сбалансированный профиль. Хорошая узнаваемость при сохранении гибкости промпта.",
+            "target_tab": "Morph",
+            "suggested_params": {}
+        },
+        {
+            "id": "psp_semantic_weak",
+            "severity": "warning",
+            "condition": "energy.get('OTHER', 0) < (energy.get('MID', 0) * 0.05) and magnitude > 0.001",
+            "title": "Profile: Semantic-Weak",
+            "description": "Слабая связь с текстовым энкодером. LoRA может не активироваться по ключевым словам корректно.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "eq_global": 1.4
+            }
+        },
+        {
+            "id": "critical_alpha_overload",
+            "severity": "critical",
+            "condition": "current_alpha > current_rank",
+            "title": "Critical: Alpha Overload",
+            "description": "Alpha > Rank guarantees oversaturation in Z-Image Turbo. This breaks the distillation stability.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "fix_alpha_chk": true,
+                "eq_global": 0.6
+            }
+        },
+        {
+            "id": "critical_fried_weights",
+            "severity": "critical",
+            "condition": "kurtosis > 12.0",
+            "title": "Critical: Fried Weights",
+            "description": "Extreme spikes in weights (>12.0). The model is likely broken. Aggressive clamping required.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "clamp_quantile": 0.99,
+                "norm_chk": true,
+                "eq_global": 0.8
+            }
+        },
+        {
+            "id": "extreme_magnitude_turbo",
+            "severity": "critical",
+            "condition": "magnitude > 0.02",
+            "title": "Critical: High Magnitude",
+            "description": "Weight magnitude is too high for 8-step Turbo. Expect severe artifacts or color bleeding.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "eq_global": 0.5,
+                "normalize": true
+            }
+        },
+        {
+            "id": "rank_bloat",
+            "severity": "warning",
+            "condition": "current_rank > 32 and knee_rank < current_rank * 0.4",
+            "title": "Warning: Rank Bloat (Inefficient)",
+            "description": "The LoRA is large, but effective information is low. You can Resize it down significantly without quality loss.",
+            "target_tab": "Resize",
+            "suggested_params": {
+                "rank": "knee_rank",
+                "auto_rank": true
+            }
+        },
+        {
+            "id": "concept_overfit_mid",
+            "severity": "warning",
+            "condition": "energy.get('MID', 0) > (energy.get('IN', 0) + energy.get('OUT', 0))",
+            "title": "Warning: Concept Overfit",
+            "description": "MID blocks are dominating. The LoRA may be too 'stubborn' and ignore prompt details or lighting.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "eq_mid": 0.7,
+                "temperature": 0.9
+            }
+        },
+        {
+            "id": "turbo_risk_high_rank",
+            "severity": "info",
+            "condition": "current_rank > 64",
+            "title": "Info: High Rank for Turbo",
+            "description": "Ranks > 64 can be unstable with 8-step Turbo models. If you see artifacts, try resizing to 64.",
+            "target_tab": "Resize",
+            "suggested_params": {
+                "rank": 64
+            }
+        },
+        {
+            "id": "weak_signal",
+            "severity": "info",
+            "condition": "magnitude > 0.0001 and magnitude < 0.001",
+            "title": "Info: Weak Signal",
+            "description": "Weight magnitude is very low. The effect might be too subtle. Consider boosting Global EQ.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "eq_global": 1.5
+            }
+        },
+        {
+            "id": "dead_lora",
+            "severity": "warning",
+            "condition": "magnitude < 0.0001",
+            "title": "Warning: Dead / Empty LoRA",
+            "description": "Weights are near zero. This file is likely empty or training failed.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "eq_global": 5.0
+            }
+        },
+        {
+            "id": "rigid_structure",
+            "severity": "warning",
+            "condition": "energy.get('IN', 0) > energy.get('MID', 0) * 1.3",
+            "title": "Imbalance: Rigid Structure",
+            "description": "Input blocks (Structure) are too strong. The model may refuse to change composition or pose.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "eq_in": 0.7,
+                "eq_mid": 1.1
+            }
+        },
+        {
+            "id": "noisy_texture",
+            "severity": "warning",
+            "condition": "energy.get('OUT', 0) > energy.get('MID', 0) * 1.3",
+            "title": "Imbalance: Noisy Texture",
+            "description": "Output blocks are overpowering. This often looks like high-frequency noise, grit or over-sharpening.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "eq_out": 0.7,
+                "fft_cutoff": 0.9
+            }
+        },
+        {
+            "id": "te_dominance",
+            "severity": "warning",
+            "condition": "energy.get('OTHER', 0) > energy.get('MID', 0) * 1.5",
+            "title": "Warning: Text Encoder Dominance",
+            "description": "Auxiliary weights (Text Encoder) are very high. This may break prompt understanding in Qwen3.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "dare_enabled": true,
+                "dare_rate": 0.4
+            }
+        },
+        {
+            "id": "micro_lora_potential",
+            "severity": "info",
+            "condition": "knee_rank < 12 and current_rank > 16",
+            "title": "Optimization: Micro-LoRA",
+            "description": "This LoRA contains very simple information (like a color grade). You can resize to Rank 8-12 with zero loss.",
+            "target_tab": "Resize",
+            "suggested_params": {
+                "rank": 8
+            }
+        },
+        {
+            "id": "alpha_mismatch",
+            "severity": "info",
+            "condition": "current_alpha != 0 and current_alpha != current_rank",
+            "title": "Info: Alpha/Rank Mismatch",
+            "description": "Alpha does not match Rank. Recommended to fix Alpha=Rank for predictable scaling in S3-DiT.",
+            "target_tab": "Morph",
+            "suggested_params": {
+                "fix_alpha_chk": true
+            }
+        }
+    ]
+}

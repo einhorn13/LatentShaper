@@ -1,0 +1,5 @@
+{
+    "output_dir": "output",
+    "checkpoints_dir": "E:\\ComfyUI_PE\\ComfyUI\\models\\diffusion_models",
+    "loras_dir": "E:\\ComfyUI_PE\\ComfyUI\\models\\loras\\z_image"
+}

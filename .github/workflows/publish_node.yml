@@ -3,9 +3,9 @@ name: Latent Shaper
 on:
   push:
     branches:
-      - main              # Или твоя рабочая основная ветка
+      - main              
     paths:
-      - "pyproject.toml"  # Запускается при изменении метаданных
+      - "pyproject.toml"  
 
 jobs:
   publish-node:

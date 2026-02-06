@@ -3,6 +3,7 @@
 
 # Exceptions - Track these files
 !.gitignore
+!.github/workflows/publish_node.yml
 
 # Specific folders to ignore (redundant with .* but good for clarity if they become non-dot)
 venv

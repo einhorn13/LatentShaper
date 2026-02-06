@@ -1,0 +1,14 @@
+[project]
+name = "latent-shaper"
+description = "Latent Shaper: Advanced toolkit for analyzing, processing, and merging LoRAs for Z-Image Turbo and SDXL in ComfyUI."
+version = "0.0.1"
+license = { file = "LICENSE" }
+dependencies = ["torch>=2.4.0", "safetensors>=0.4.3", "numpy>=1.26.0", "gradio>=6.0.0", "pandas>=2.2.0", "matplotlib>=3.9.0", "seaborn>=0.13.0", "psutil>=6.0.0", "Pillow>=10.4.0"]
+
+[project.urls]
+Repository = "https://github.com/YourUsername/LatentShaper"
+
+[tool.comfy]
+PublisherId = "${{ secrets.REGISTRY_ACCESS_TOKEN }}"
+DisplayName = "Latent Shaper"
+Icon = "" 

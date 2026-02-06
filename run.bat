@@ -1,7 +1,7 @@
 
 @echo off
-title Z-Image Turbo LoRA Studio
-echo Starting Z-Image Turbo LoRA Studio...
+title Latent Shaper
+echo Starting Latent Shaper...
 echo.
 
 :: Check for virtual environment (optional but recommended)

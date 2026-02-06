@@ -8,7 +8,9 @@ import seaborn as sns
 import io
 from PIL import Image
 from .common import resolve_path_priority
-from ..context import pipeline, advisor
+from ..context import advisor
+from core.services.analyzer import AnalyzerService
+from core.structs import ModelReference
 
 def run_analysis(ws_in, disk_in, up_in, progress=gr.Progress()):
     inputs = resolve_path_priority(ws_in, disk_in, up_in)
@@ -16,18 +18,21 @@ def run_analysis(ws_in, disk_in, up_in, progress=gr.Progress()):
         return None, None, None, "<div style='color:red'>❌ Error: No model selected.</div>", [], gr.update(choices=[], value=None)
     
     target = inputs[0]
+    service = AnalyzerService()
+    ref = ModelReference(target)
+    
     data = None
-    for p, m, res in pipeline.analyze_spectrum_gen(target):
+    for p, m, res in service.analyze(ref):
         progress(p, desc=m)
         if res: data = res
     
     if not data or not data.get("spectrum"): 
         return None, None, None, "<div style='color:red'>❌ Analysis failed.</div>", [], gr.update(choices=[], value=None)
 
-    # 1. Plots
     clean_spectrum = [float(x) for x in data["spectrum"]]
     df_spectrum = pd.DataFrame({"Rank": range(1, len(clean_spectrum)+1), "Value": clean_spectrum, "LogValue": np.log10(np.array(clean_spectrum)+1e-9).tolist()})
-    df_energy = pd.DataFrame({"Region": list(data["block_energy"].keys()), "Energy": list(data["block_energy"].values())})
+    energy_dict = data.get("block_energy", {})
+    df_energy = pd.DataFrame({"Region": list(energy_dict.keys()), "Energy": list(energy_dict.values())})
 
     heatmap_img = None
     if data.get("heatmap"):
@@ -38,15 +43,13 @@ def run_analysis(ws_in, disk_in, up_in, progress=gr.Progress()):
         heatmap_img = Image.open(buf)
         plt.close()
 
-    # 2. Evaluate Recommendations
     metrics = {
         "kurtosis": data["kurtosis"], 
-        "block_energy": data["block_energy"], 
+        "block_energy": data.get("block_energy", {}), 
         "current_rank": data["avg_rank"], 
         "current_alpha": data["avg_alpha"], 
         "magnitude": data["magnitude"], 
-        "knee_rank": data["knee_rank"],
-        "intrinsic_rank": data.get("intrinsic_rank", data["knee_rank"])
+        "knee_rank": data.get("knee_rank", 0)
     }
     recommendations = advisor.evaluate(metrics)
     
@@ -61,9 +64,8 @@ def run_analysis(ws_in, disk_in, up_in, progress=gr.Progress()):
     <div style='line-height:1.6'>
         <b>Architecture:</b> {data['model_name']}<br>
         <b>Profile:</b> {active_profile_html or 'Neutral'}<br>
-        <b>Avg Rank:</b> {data['avg_rank']} | <b>Intrinsic Rank (95%):</b> {data.get('intrinsic_rank', 'N/A')}<br>
+        <b>Avg Rank:</b> {data['avg_rank']}<br>
         <b>Avg Alpha:</b> {data['avg_alpha']}<br>
-        <b>Mid Dominance:</b> {data.get('mid_dominance', 1.0):.2f}<br>
         <b>Kurtosis:</b> {data['kurtosis']:.2f} | <b>Magnitude:</b> {data['magnitude']:.5f}
     </div>
     """
@@ -74,8 +76,6 @@ def run_analysis(ws_in, disk_in, up_in, progress=gr.Progress()):
     return df_spectrum, df_energy, heatmap_img, report_html, recommendations, dropdown_update
 
 def apply_recommendation(recommendations, selected_title, current_file, current_drop):
-    # Note: This function signature might need update if we want to auto-fill the new selectors
-    # For now, we return updates for the Morph tab parameters only.
     if not recommendations or not selected_title: return [gr.update()] * 23
     target_rec = next((r for r in recommendations if r.title == selected_title), None)
     if not target_rec: return [gr.update()] * 23
@@ -83,10 +83,8 @@ def apply_recommendation(recommendations, selected_title, current_file, current_
     p = target_rec.params
     def val(key, default=gr.update()): return p[key] if key in p else default
     
-    # We don't update file inputs here to avoid complexity, user manually switches tab
     return [
         gr.Tabs(selected="Morph"), 
-        # Skip file inputs updates for now
         gr.update(), gr.update(), gr.update(),
         val("eq_global"), val("eq_in"), val("eq_mid"), val("eq_out"), False,
         val("temperature"), val("fft_cutoff"), val("clamp_quantile"), val("fix_alpha_chk", True),

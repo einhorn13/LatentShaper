@@ -47,7 +47,7 @@ def load_lora_cached(path: str) -> Tuple[Dict[str, torch.Tensor], Dict[str, str]
         _LORA_CACHE[path] = (sd, metadata)
         return {k: v.clone() for k, v in sd.items()}, copy.deepcopy(metadata)
     except Exception as e:
-        print(f"[LoRA Studio] Error loading {path}: {e}")
+        print(f"[Latent Shaper] Error loading {path}: {e}")
         return {}, {}
 
 def save_z_lora(z_lora: Dict, path: str, precision: str = "FP16", save_meta: bool = True) -> str:
@@ -66,7 +66,7 @@ def save_z_lora(z_lora: Dict, path: str, precision: str = "FP16", save_meta: boo
         save_file(save_dict, path, metadata=meta)
         return path
     except Exception as e:
-        print(f"[LoRA Studio] Save failed: {e}")
+        print(f"[Latent Shaper] Save failed: {e}")
         raise e
 
 # --- MATRIX OPS ---
@@ -85,12 +85,12 @@ def reconstruct_matrix(state_dict: Dict[str, torch.Tensor], group, device: str) 
             if rank > 0: scale = alpha_val / rank
         return (up @ down) * scale
     except Exception as e:
-        print(f"[LoRA Studio] Matrix reconstruction failed for {group.base_name}: {e}")
+        print(f"[Latent Shaper] Matrix reconstruction failed for {group.base_name}: {e}")
         return None
 
 def apply_lora_dict(model, clip, lora_dict: Dict[str, torch.Tensor], strength: float):
     if not lora_dict: return (model, clip)
-    print(f"[LoRA Studio] Patching model with {len(lora_dict)} keys (Strength: {strength})...")
+    print(f"[Latent Shaper] Patching model with {len(lora_dict)} keys (Strength: {strength})...")
     new_model, new_clip = comfy.sd.load_lora_for_models(
         model, clip, lora_dict, strength_model=strength, strength_clip=strength
     )
@@ -127,7 +127,7 @@ def process_lora_dict(sd: Dict[str, torch.Tensor], callback: Callable) -> Dict[s
     return new_sd
 
 def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: int, global_strength: float) -> Dict[str, torch.Tensor]:
-    print(f"[LoRA Studio] Merging {len(active_loras)} LoRAs via {algorithm}...")
+    print(f"[Latent Shaper] Merging {len(active_loras)} LoRAs via {algorithm}...")
 
     all_block_names = set()
     max_input_rank = 0 
@@ -158,7 +158,7 @@ def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: in
             if g.down_key in item["sd"]:
                 max_input_rank = max(max_input_rank, item["sd"][g.down_key].shape[0])
 
-    print(f"[LoRA Studio] Found {len(all_block_names)} unique blocks to merge.")
+    print(f"[Latent Shaper] Found {len(all_block_names)} unique blocks to merge.")
     merged_sd = {}
     device = get_optimal_device()
 

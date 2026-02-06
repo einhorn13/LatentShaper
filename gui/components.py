@@ -10,22 +10,24 @@ def create_source_selector(
     show_disk: bool = True, 
     show_upload: bool = True,
     multiselect: bool = False,
-    disk_dir_type: str = "loras" # 'loras' or 'checkpoints'
+    disk_dir_type: str = "loras"
 ):
     """
-    Creates a unified input source selector (Workspace + Disk + Upload).
-    Returns a dict of components to be wired up.
+    Creates a unified input source selector with Refresh and Clear capabilities.
     """
     config = ConfigManager()
-    
-    # Determine initial disk path
     disk_path = config.loras_dir if disk_dir_type == "loras" else config.checkpoints_dir
     disk_files = SafeStreamer.scan_directory(disk_path) if disk_path else []
     
     components = {}
     
     with gr.Group():
-        gr.Markdown(f"#### {label_prefix} Source")
+        with gr.Row():
+            gr.Markdown(f"#### {label_prefix}")
+            # Action buttons for the whole group
+            with gr.Row():
+                components["refresh"] = gr.Button("🔄", size="sm", variant="secondary", scale=0)
+                components["clear"] = gr.Button("🗑️", size="sm", variant="secondary", scale=0)
         
         with gr.Row():
             if show_ws:
@@ -33,8 +35,7 @@ def create_source_selector(
                     label="Workspace (RAM)", 
                     choices=[], 
                     multiselect=multiselect, 
-                    scale=3,
-                    elem_id=f"{label_prefix}_ws"
+                    scale=3
                 )
             else:
                 components["ws"] = None
@@ -45,16 +46,13 @@ def create_source_selector(
                     choices=disk_files, 
                     multiselect=multiselect,
                     scale=3,
-                    allow_custom_value=True,
-                    elem_id=f"{label_prefix}_disk"
+                    allow_custom_value=True
                 )
-                components["refresh"] = gr.Button("🔄", size="sm", scale=0)
             else:
                 components["disk"] = None
-                components["refresh"] = None
 
         if show_upload:
-            with gr.Accordion("Upload from Computer", open=False):
+            with gr.Accordion("Upload", open=False):
                 components["upload"] = gr.File(
                     label="Upload File", 
                     file_count="multiple" if multiselect else "single",
@@ -63,14 +61,30 @@ def create_source_selector(
         else:
             components["upload"] = None
 
-    # Internal wiring for Refresh
+    # --- Internal Wiring ---
+    
+    # Refresh Logic
     if show_disk and components["refresh"]:
         def _refresh():
-            # Re-read config in case it changed
             current_path = config.loras_dir if disk_dir_type == "loras" else config.checkpoints_dir
             files = SafeStreamer.scan_directory(current_path, force_refresh=True)
-            return gr.update(label=f"Disk ({current_path or 'Not Set'})", choices=files)
-        
+            return gr.update(choices=files)
         components["refresh"].click(_refresh, outputs=[components["disk"]])
+
+    # Clear Logic
+    if components["clear"]:
+        def _clear():
+            updates = []
+            if show_ws: updates.append(gr.update(value=[] if multiselect else None))
+            if show_disk: updates.append(gr.update(value=[] if multiselect else None))
+            if show_upload: updates.append(gr.update(value=None))
+            return updates
+
+        clear_outputs = []
+        if show_ws: clear_outputs.append(components["ws"])
+        if show_disk: clear_outputs.append(components["disk"])
+        if show_upload: clear_outputs.append(components["upload"])
+        
+        components["clear"].click(_clear, outputs=clear_outputs)
 
     return components

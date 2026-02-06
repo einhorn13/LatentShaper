@@ -29,7 +29,7 @@ class LS_Merger:
     RETURN_TYPES = ("Z_LORA",)
     RETURN_NAMES = ("z_lora",)
     FUNCTION = "merge"
-    CATEGORY = "LoRA Studio/Merging"
+    CATEGORY = "Latent Shaper/Merging"
 
     def merge(self, algorithm, target_rank, global_strength, **kwargs):
         active_loras = []
@@ -58,7 +58,7 @@ class LS_Merger:
                 })
         
         if not active_loras:
-            print("[LoRA Studio] Warning: No valid inputs provided for merge.")
+            print("[Latent Shaper] Warning: No valid inputs provided for merge.")
             return ({"sd": {}, "name": "Empty_Merge"},)
 
         merged_sd = process_merge_dict(active_loras, algorithm, target_rank, global_strength)

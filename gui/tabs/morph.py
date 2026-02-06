@@ -7,7 +7,7 @@ from gui.components import create_source_selector
 
 def create_morph_tab():
     with gr.TabItem("Morph", id="Morph"):
-        gr.Markdown("### 🧬 Morphing Studio (S3-DiT Optimized)")
+        gr.Markdown("### 🧬 Morphing Studio")
         gr.Markdown("Fine-tune LoRA weights using region-based equalizers and mathematical filters.")
         
         sel = create_source_selector("Input Model(s)", multiselect=True, disk_dir_type="loras")
@@ -56,7 +56,7 @@ def create_morph_tab():
                         fix_alpha = gr.Checkbox(label="Sync Alpha=Rank", value=True)
                         
                         with gr.Group():
-                            homeostatic = gr.Checkbox(label="🛡️ Turbo Safety (Homeostatic)", value=False)
+                            homeostatic = gr.Checkbox(label="🛡️ Safety (Homeostatic)", value=False)
                             homeostatic_thr = gr.Number(label="Target Mag.", value=0.01, step=0.001)
 
                     with gr.Column():
@@ -78,7 +78,6 @@ def create_morph_tab():
         
         def _update_name(ws, disk, up): return suggest_output_name(ws, disk, up, "_morphed")
         
-        # FIX: Filter None triggers
         triggers = [t for t in [sel["ws"], sel["disk"], sel["upload"]] if t is not None]
         for t in triggers:
             t.change(_update_name, [sel["ws"], sel["disk"], sel["upload"]], mo_out)

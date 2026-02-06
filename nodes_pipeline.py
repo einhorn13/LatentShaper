@@ -15,6 +15,7 @@ from .core.math import MathKernel
 from .core.comfy_utils import load_lora_cached, process_lora_dict, apply_lora_dict, save_z_lora
 from .core.tensor_processor import TensorProcessor
 from .core.model_specs import ModelRegistry
+from .core.configs import MorphConfig, ExtractConfig # Import configs for future use if needed
 
 class LS_Loader:
     @classmethod
@@ -23,7 +24,7 @@ class LS_Loader:
     RETURN_TYPES = ("Z_LORA",)
     RETURN_NAMES = ("z_lora",)
     FUNCTION = "load"
-    CATEGORY = "LoRA Studio/Pipeline"
+    CATEGORY = "Latent Shaper/Pipeline"
     def load(self, lora_name):
         path = folder_paths.get_full_path("loras", lora_name)
         sd, meta = load_lora_cached(path)
@@ -43,7 +44,7 @@ class LS_EQ:
         }
     RETURN_TYPES = ("Z_LORA",)
     FUNCTION = "process"
-    CATEGORY = "LoRA Studio/Pipeline"
+    CATEGORY = "Latent Shaper/Pipeline"
     def process(self, z_lora, eq_global, eq_in, eq_mid, eq_out):
         def callback(delta, b_idx, region, grp):
             m = eq_global
@@ -68,7 +69,7 @@ class LS_Filters:
         }
     RETURN_TYPES = ("Z_LORA",)
     FUNCTION = "process"
-    CATEGORY = "LoRA Studio/Pipeline"
+    CATEGORY = "Latent Shaper/Pipeline"
     def process(self, z_lora, fft_cutoff, band_stop_start, band_stop_end, homeostatic):
         params = {
             "fft_cutoff": fft_cutoff,
@@ -95,7 +96,7 @@ class LS_Dynamics:
         }
     RETURN_TYPES = ("Z_LORA",)
     FUNCTION = "process"
-    CATEGORY = "LoRA Studio/Pipeline"
+    CATEGORY = "Latent Shaper/Pipeline"
     def process(self, z_lora, spectral_threshold, dare_rate, clamp):
         params = {
             "spectral_enabled": spectral_threshold > 0,
@@ -122,14 +123,14 @@ class LS_Eraser:
         }
     RETURN_TYPES = ("Z_LORA",)
     FUNCTION = "process"
-    CATEGORY = "LoRA Studio/Pipeline"
+    CATEGORY = "Latent Shaper/Pipeline"
     def process(self, z_lora, erase_blocks, erase_concepts, clip=None):
         block_set = MathKernel.parse_block_string(erase_blocks)
         concept_vectors = []
         
         if erase_concepts and erase_concepts.strip():
             if clip is None:
-                print("[LoRA Studio] Warning: 'erase_concepts' provided but CLIP input is missing. Concept erasure skipped.")
+                print("[Latent Shaper] Warning: 'erase_concepts' provided but CLIP input is missing.")
             else:
                 for c in erase_concepts.split(","):
                     c = c.strip()
@@ -164,7 +165,7 @@ class LS_Metadata:
         }
     RETURN_TYPES = ("Z_LORA",)
     FUNCTION = "edit"
-    CATEGORY = "LoRA Studio/Pipeline"
+    CATEGORY = "Latent Shaper/Pipeline"
     def edit(self, z_lora, new_name, trigger_words, description, merge_mode):
         meta = z_lora.get("metadata", {}).copy()
         if merge_mode == "Clear": meta = {}
@@ -180,7 +181,7 @@ class LS_Analyzer:
         return {"required": {"z_lora": ("Z_LORA",), "mode": (["Basic Stats", "Block Heatmap"],),}}
     RETURN_TYPES = ("IMAGE", "STRING")
     FUNCTION = "analyze"
-    CATEGORY = "LoRA Studio/Pipeline"
+    CATEGORY = "Latent Shaper/Pipeline"
     def analyze(self, z_lora, mode):
         sd = z_lora["sd"]
         spec = ModelRegistry.get_spec(list(sd.keys()))
@@ -217,14 +218,14 @@ class LS_Save:
         return {
             "required": {
                 "z_lora": ("Z_LORA",),
-                "filename_prefix": ("STRING", {"default": "lora_studio/my_lora"}),
+                "filename_prefix": ("STRING", {"default": "latent_shaper/my_lora"}),
                 "precision": (["FP16", "BF16", "FP32"],),
                 "save_metadata": ("BOOLEAN", {"default": True}),
             }
         }
     RETURN_TYPES = ("STRING",)
     FUNCTION = "save"
-    CATEGORY = "LoRA Studio/Pipeline"
+    CATEGORY = "Latent Shaper/Pipeline"
     OUTPUT_NODE = True
     def save(self, z_lora, filename_prefix, precision, save_metadata):
         output_dir = folder_paths.get_output_directory()
@@ -252,6 +253,6 @@ class LS_Apply:
         }
     RETURN_TYPES = ("MODEL", "CLIP")
     FUNCTION = "apply"
-    CATEGORY = "LoRA Studio/Pipeline"
+    CATEGORY = "Latent Shaper/Pipeline"
     def apply(self, model, clip, z_lora, strength):
         return apply_lora_dict(model, clip, z_lora["sd"], strength)

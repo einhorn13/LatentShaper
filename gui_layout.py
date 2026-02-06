@@ -2,6 +2,7 @@
 
 import gradio as gr
 import gui_workspace
+from core.version import __version__
 from gui.tabs.analyze import create_analyze_tab
 from gui.tabs.extract import create_extract_tab
 from gui.tabs.resize import create_resize_tab
@@ -12,11 +13,12 @@ from gui.tabs.queue_tab import create_queue_tab
 from gui.tabs.bridge import create_bridge_tab
 from gui.tabs.settings import create_settings_tab
 from gui.tabs.utils import create_utils_tab
+from gui.tabs.checkpoint_merge import create_checkpoint_merge_tab
 from gui.actions import get_workspace_choices, run_analysis, apply_recommendation, handle_sidebar_select
 
 def create_ui():
-    with gr.Blocks(title="Z-Image Turbo Studio") as app:
-        gr.Markdown("# ⚡ Z-Image Turbo LoRA Studio")
+    with gr.Blocks(title=f"Latent Shaper v{__version__}") as app:
+        gr.Markdown(f"# ⚡ Latent Shaper <small>v{__version__}</small>")
         
         with gr.Row():
             with gr.Column(scale=1, min_width=300):
@@ -31,6 +33,7 @@ def create_ui():
                     ut = create_utils_tab()
                     br = create_bridge_tab()
                     me = create_merge_tab()
+                    ck = create_checkpoint_merge_tab()
                     md = create_metadata_tab()
                     create_queue_tab()
                     create_settings_tab()
@@ -48,16 +51,20 @@ def create_ui():
                 gr.update(choices=c), # Utils
                 gr.update(choices=c), # Bridge
                 gr.update(choices=c), # Merge
+                gr.update(choices=c), # Ckpt Merge A
+                gr.update(choices=c), # Ckpt Merge B
+                gr.update(choices=c), # Ckpt Merge C
+                gr.update(choices=c), # Ckpt Merge LoRA
                 gr.update(choices=c)  # Metadata
             ]
 
         all_ws_drops = [
-            an["ws"], ex["base_ws"], ex["tuned_ws"], re["ws"], mo["ws"], ut["ws"], br["ws"], me["ws_drop"], md["drop"]
+            an["ws"], ex["base_ws"], ex["tuned_ws"], re["ws"], mo["ws"], ut["ws"], br["ws"], me["ws_drop"], 
+            ck["sel_a"]["ws"], ck["sel_b"]["ws"], ck["sel_c"]["ws"], ck["sel_lora"]["ws"], md["drop"]
         ]
         
         workspace_list.change(sync_drops, None, all_ws_drops)
 
-        # Sidebar Selection Wiring
         workspace_list.select(
             handle_sidebar_select,
             None,
@@ -66,10 +73,10 @@ def create_ui():
                 ex["base_ws"], ex["base_disk"],
                 re["ws"], re["upload"],
                 mo["ws"], mo["upload"],
-                ut["ws"], ut["upload"], # <--- ADDED THIS (Utils Tab)
+                ut["ws"], ut["upload"],
                 me["ws_drop"],
                 md["drop"],
-                ex["out_name"], re["out_name"], mo["out_name"], ut["out_name"] # <--- ADDED THIS (Utils Output Name)
+                ex["out_name"], re["out_name"], mo["out_name"], ut["out_name"]
             ]
         )
 

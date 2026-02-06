@@ -1,0 +1,16 @@
+# Ignore all dotfiles and folders
+.*
+
+# Exceptions - Track these files
+!.gitignore
+
+# Specific folders to ignore (redundant with .* but good for clarity if they become non-dot)
+venv
+output
+
+# Files to ignore
+project_structure.txt
+
+# Python cache
+__pycache__
+*.pyc

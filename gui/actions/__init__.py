@@ -40,7 +40,7 @@ from .submission import (
     submit_resize,
     submit_morph,
     submit_merge,
-    submit_utils, # Added
+    submit_utils,
     add_files_to_merge,
     add_workspace_to_merge,
     clear_merge_list,
@@ -49,3 +49,5 @@ from .submission import (
     invert_weights_ui,
     submit_bridge
 )
+
+from .checkpoint_merge import submit_checkpoint_merge # Added

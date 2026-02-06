@@ -18,8 +18,8 @@ def create_utils_tab():
                 gr.Markdown("#### 📦 Converter")
                 ut_prec = gr.Radio(["Keep", "FP32", "FP16", "BF16"], value="Keep", label="Target Precision", 
                                   info="BF16 is recommended for S3-DiT/Turbo.")
-                ut_norm = gr.Checkbox(label="Normalize Keys (Kohya-ss)", value=False, 
-                                     info="Fixes compatibility with ComfyUI.")
+                ut_norm = gr.Checkbox(label="Fix Key Names (ComfyUI format)", value=False, 
+                                     info="Fixes broken layers (e.g. layers_0 -> layers.0) and attention blocks.")
             
             with gr.Column():
                 gr.Markdown("#### 📐 Alpha Rescaler")

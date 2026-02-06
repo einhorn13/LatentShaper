@@ -6,6 +6,7 @@ import os
 from core.pipeline import ZPipeline
 from core.config import ConfigManager
 from core.logger import Logger
+from core.version import __version__
 
 def run_cli(args):
     import torch
@@ -41,16 +42,15 @@ def run_cli(args):
         Logger.info("Morph Done.")
 
 def main():
-    # Initialize Logger first
-    Logger.info("Starting Z-Image Turbo LoRA Studio...")
+    Logger.info(f"Starting Latent Shaper v{__version__}...")
     
-    # Initialize Config and Default Directory
     config = ConfigManager()
     if not os.path.exists(config.output_dir):
         os.makedirs(config.output_dir, exist_ok=True)
-        Logger.info(f"Created default output directory: {config.output_dir}")
+        Logger.info(f"Output directory: {config.output_dir}")
 
-    parser = argparse.ArgumentParser(description="Z-Image Turbo LoRA Studio")
+    parser = argparse.ArgumentParser(description=f"Latent Shaper v{__version__} - Advanced LoRA & Checkpoint Toolkit")
+    parser.add_argument("--version", action="version", version=f"Latent Shaper {__version__}")
     parser.add_argument("--gui", action="store_true", help="Launch Graphical User Interface")
     
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -83,7 +83,6 @@ def main():
 
     args = parser.parse_args()
 
-    # If --gui is passed OR no arguments are provided, launch GUI
     if args.gui or len(sys.argv) == 1:
         Logger.info("Launching GUI...")
         import gui_launcher

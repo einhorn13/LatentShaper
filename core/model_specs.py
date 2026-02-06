@@ -3,7 +3,7 @@
 import re
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import List, Dict, Optional, Set, Tuple
+from typing import List
 
 class ModuleType(Enum):
     TRANSFORMER = auto()
@@ -29,23 +29,25 @@ class ModelSpec(ABC):
     @abstractmethod
     def is_lora_target(self, key: str) -> bool: pass
 
-class ZImageTurboSpec(ModelSpec):
-    name = "Z-Image Turbo (S3-DiT)"
+class S3DiTSpec(ModelSpec):
+    """
+    Specification for S3-DiT Architecture (Z-Image Turbo, etc.)
+    """
+    name = "S3-DiT (Z-Image Turbo)"
     block_count = 30
     
     _BLOCK_PATTERN = re.compile(r"(?:blocks|layers|input_blocks|output_blocks|middle_block)[\._]?(\d+)")
     
-    # Extended map to catch more variations
     _COMPONENT_MAP = {
         "attn.q_proj": 0, "to_q": 0, "q_proj": 0,
         "attn.k_proj": 1, "to_k": 1, "k_proj": 1,
         "attn.v_proj": 2, "to_v": 2, "v_proj": 2,
         "attn.o_proj": 3, "to_out.0": 3, "out_proj": 3,
-        "attn.qkv": 0, "qkv_proj": 0, # Fused QKV support
+        "attn.qkv": 0, "qkv_proj": 0,
         "mlp.gate_proj": 4, "gate_proj": 4,
         "mlp.up_proj": 5, "up_proj": 5,
         "mlp.down_proj": 6, "down_proj": 6,
-        "ff.net": 4, "linear": 4 # Generic linear layers
+        "ff.net": 4, "linear": 4
     }
 
     def detect(self, keys: List[str]) -> bool:
@@ -88,7 +90,8 @@ class UnknownSpec(ModelSpec):
 class ModelRegistry:
     @staticmethod
     def get_spec(keys: List[str]) -> ModelSpec:
-        for spec_cls in [ZImageTurboSpec]:
+        # Future: Add FluxSpec, SDXLSpec here
+        for spec_cls in [S3DiTSpec]:
             spec = spec_cls()
             if spec.detect(keys): return spec
         return UnknownSpec()

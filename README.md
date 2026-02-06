@@ -1,4 +1,4 @@
-# Z-Image LoRA Studio
+# Latent Shaper
 
 **Advanced toolkit for analyzing, processing, and merging LoRAs for Z-Image Turbo (S3-DiT) and SDXL architectures.**
 
@@ -55,11 +55,11 @@ Build complex processing pipelines directly in your graph.
     ```
 2.  Clone the repository:
     ```bash
-    git clone https://github.com/YourUsername/LoraStudio.git
+    git clone https://github.com/Einhorn13/LatentShaper.git
     ```
 3.  Install requirements:
     ```bash
-    cd LoraStudio
+    cd LatentShaper
     pip install -r requirements.txt
     ```
 4.  **Restart ComfyUI**.

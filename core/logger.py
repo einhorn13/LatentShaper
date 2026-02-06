@@ -2,7 +2,6 @@
 
 import logging
 import sys
-import time
 
 class ColoredFormatter(logging.Formatter):
     """
@@ -44,7 +43,8 @@ class Logger:
     def setup():
         if Logger._instance: return
         
-        logger = logging.getLogger("ZImageTurbo")
+        # Renamed logger to LatentShaper
+        logger = logging.getLogger("LatentShaper")
         logger.setLevel(logging.INFO)
         
         # Console Handler

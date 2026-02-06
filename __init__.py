@@ -14,6 +14,7 @@ from .nodes_pipeline import (
 from .nodes_merging import (
     LS_Merger
 )
+from .core.version import __version__
 
 NODE_CLASS_MAPPINGS = {
     # Pipeline
@@ -45,4 +46,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LS_Merger": "LS Merger (6-Input)",
 }
 
-__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
+WEB_DIRECTORY = "./js"
+__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS', '__version__']
+
+# Log Latent Shaper version on ComfyUI startup
+print(f"### Latent Shaper v{__version__} loaded.")

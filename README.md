@@ -82,10 +82,10 @@ On the first launch of the GUI, go to the **Settings** tab to configure your `ch
     cd LatentShaper
     pip install -r requirements.txt
     ```
-3.  ```bash
-# Start GUI
-python gui_launcher.py
-```
+3.  Start GUI
+    ```bash
+    python gui_launcher.py
+    ```
 
 ## ComfyUI screenshot
 <img width="1685" height="1055" alt="image" src="https://github.com/user-attachments/assets/87294777-85a9-470b-b3fc-3ff27fbd3bea" />

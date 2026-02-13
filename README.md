@@ -47,7 +47,7 @@ Build complex processing pipelines directly in your graph.
 
 ---
 
-## Installation
+## ComfyUI Installation
 
 1.  Navigate to your ComfyUI custom nodes directory:
     ```bash
@@ -68,6 +68,24 @@ Build complex processing pipelines directly in your graph.
 
 ## Configuration
 On the first launch of the GUI, go to the **Settings** tab to configure your `checkpoints` and `loras` directories for direct disk access.
+
+---
+
+## Standalone GUI Installation
+
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/Einhorn13/LatentShaper.git
+    ```
+2.  Install requirements:
+    ```bash
+    cd LatentShaper
+    pip install -r requirements.txt
+    ```
+3.  ```bash
+# Start GUI
+python gui_launcher.py
+```
 
 ## ComfyUI screenshot
 <img width="1685" height="1055" alt="image" src="https://github.com/user-attachments/assets/87294777-85a9-470b-b3fc-3ff27fbd3bea" />

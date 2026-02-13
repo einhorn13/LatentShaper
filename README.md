@@ -73,7 +73,8 @@ On the first launch of the GUI, go to the **Settings** tab to configure your `ch
 <img width="1685" height="1055" alt="image" src="https://github.com/user-attachments/assets/87294777-85a9-470b-b3fc-3ff27fbd3bea" />
 
 ## GUI screenshot
-<img width="1914" height="912" alt="image" src="https://github.com/user-attachments/assets/9ef6d6bb-4c7b-430e-857c-1a6a8245956c" />
+<img width="1892" height="837" alt="image" src="https://github.com/user-attachments/assets/69ec4734-0d14-4ce5-961e-09973e872138" />
+
 
 
 

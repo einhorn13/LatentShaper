@@ -1,4 +1,3 @@
-# core/configs.py
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Union
@@ -48,9 +47,6 @@ class MorphConfig(BaseConfig):
     eraser_start: int = 0
     eraser_end: int = 0
     erase_blocks: str = ""
-    # Bridge
-    is_bridge: bool = False
-    strength: float = 0.5
 
 @dataclass
 class MergeConfig(BaseConfig):

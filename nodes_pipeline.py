@@ -1,4 +1,3 @@
-# nodes_pipeline.py
 
 import torch
 import folder_paths
@@ -12,65 +11,102 @@ import json
 from PIL import Image
 
 from .core.math import MathKernel
-from .core.comfy_utils import load_lora_cached, process_lora_dict, apply_lora_dict, save_z_lora
+from .core.comfy_utils import load_lora_cached, apply_lora_assembly, save_ls_lora
 from .core.tensor_processor import TensorProcessor
 from .core.model_specs import ModelRegistry
-from .core.configs import MorphConfig, ExtractConfig # Import configs for future use if needed
+from .core.structs_assembly import LoRAAssembly
+
+# --- Helper for Dual Format Support ---
+def get_assembly(lora_input) -> LoRAAssembly:
+    """
+    Robustly retrieves LoRAAssembly from input.
+    Supports:
+    1. New LS_LORA format: {"assembly": LoRAAssembly, ...}
+    2. Old Z_LORA format: {"sd": dict, ...}
+    """
+    if lora_input is None:
+        return LoRAAssembly()
+        
+    # Case 1: New Format
+    if "assembly" in lora_input:
+        return lora_input["assembly"]
+    
+    # Case 2: Old/Standard Format (dict with state_dict)
+    if "sd" in lora_input:
+        # Convert on the fly
+        return LoRAAssembly.from_state_dict(lora_input["sd"], lora_input.get("metadata"))
+        
+    # Case 3: Raw state dict (unlikely but possible in some workflows)
+    if isinstance(lora_input, dict):
+        # Check if it looks like a state dict (has keys)
+        return LoRAAssembly.from_state_dict(lora_input)
+        
+    return LoRAAssembly()
 
 class LS_Loader:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {"lora_name": (folder_paths.get_filename_list("loras"),)}}
-    RETURN_TYPES = ("Z_LORA",)
-    RETURN_NAMES = ("z_lora",)
+    RETURN_TYPES = ("LS_LORA",)
+    RETURN_NAMES = ("ls_lora",)
     FUNCTION = "load"
     CATEGORY = "Latent Shaper/Pipeline"
     def load(self, lora_name):
         path = folder_paths.get_full_path("loras", lora_name)
-        sd, meta = load_lora_cached(path)
-        return ({"sd": sd, "name": lora_name, "metadata": meta},)
+        assembly = load_lora_cached(path)
+        return ({"assembly": assembly, "name": lora_name},)
 
 class LS_EQ:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "z_lora": ("Z_LORA",),
+                "ls_lora": ("LS_LORA",),
                 "eq_global": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.1}),
                 "eq_in": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
                 "eq_mid": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
                 "eq_out": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
             }
         }
-    RETURN_TYPES = ("Z_LORA",)
+    RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "process"
     CATEGORY = "Latent Shaper/Pipeline"
-    def process(self, z_lora, eq_global, eq_in, eq_mid, eq_out):
-        def callback(delta, b_idx, region, grp):
+    def process(self, ls_lora, eq_global, eq_in, eq_mid, eq_out):
+        assembly = get_assembly(ls_lora).clone()
+        spec = ModelRegistry.get_spec(list(assembly.modules.keys()))
+        
+        for name, mod in assembly.modules.items():
+            b_idx = spec.get_block_number(name)
+            region = spec.get_region(b_idx)
+            
             m = eq_global
             if region == "IN": m *= eq_in
             elif region == "MID": m *= eq_mid
             elif region == "OUT": m *= eq_out
-            return TensorProcessor.apply_filters(delta, {}, eq_factor=m, b_idx=b_idx)
-        new_sd = process_lora_dict(z_lora["sd"], callback)
-        return ({"sd": new_sd, "name": z_lora["name"], "metadata": z_lora.get("metadata", {})},)
+            
+            mod.apply_scale(m)
+            
+        return ({"assembly": assembly, "name": ls_lora.get("name", "eq_result")},)
 
 class LS_Filters:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "z_lora": ("Z_LORA",),
+                "ls_lora": ("LS_LORA",),
                 "fft_cutoff": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.05}),
                 "band_stop_start": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "band_stop_end": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "homeostatic": ("BOOLEAN", {"default": False}),
             }
         }
-    RETURN_TYPES = ("Z_LORA",)
+    RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "process"
     CATEGORY = "Latent Shaper/Pipeline"
-    def process(self, z_lora, fft_cutoff, band_stop_start, band_stop_end, homeostatic):
+    def process(self, ls_lora, fft_cutoff, band_stop_start, band_stop_end, homeostatic):
+        assembly = get_assembly(ls_lora).clone()
+        spec = ModelRegistry.get_spec(list(assembly.modules.keys()))
+        
         params = {
             "fft_cutoff": fft_cutoff,
             "band_stop_enabled": band_stop_end > band_stop_start,
@@ -78,26 +114,40 @@ class LS_Filters:
             "band_stop_end": band_stop_end,
             "homeostatic": homeostatic
         }
-        def callback(delta, b_idx, region, grp):
-            return TensorProcessor.apply_filters(delta, params, b_idx=b_idx)
-        new_sd = process_lora_dict(z_lora["sd"], callback)
-        return ({"sd": new_sd, "name": z_lora["name"], "metadata": z_lora.get("metadata", {})},)
+        
+        for name, mod in assembly.modules.items():
+            if mod.is_decomposed: mod.compose()
+            delta = mod.up.float() @ mod.down.float()
+            
+            b_idx = spec.get_block_number(name)
+            filtered = TensorProcessor.apply_filters(delta, params, b_idx=b_idx)
+            
+            if filtered is not None:
+                nd, nu, nr = MathKernel.svd_decomposition(filtered, mod.rank)
+                mod.down = nd.to(dtype=torch.bfloat16)
+                mod.up = nu.to(dtype=torch.bfloat16)
+                mod.alpha = float(nr)
+                mod.is_decomposed = False
+            
+        return ({"assembly": assembly, "name": ls_lora.get("name", "filter_result")},)
 
 class LS_Dynamics:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "z_lora": ("Z_LORA",),
+                "ls_lora": ("LS_LORA",),
                 "spectral_threshold": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 5.0, "step": 0.1}),
                 "dare_rate": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.99, "step": 0.01}),
                 "clamp": ("FLOAT", {"default": 1.0, "min": 0.8, "max": 1.0, "step": 0.01}),
             }
         }
-    RETURN_TYPES = ("Z_LORA",)
+    RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "process"
     CATEGORY = "Latent Shaper/Pipeline"
-    def process(self, z_lora, spectral_threshold, dare_rate, clamp):
+    def process(self, ls_lora, spectral_threshold, dare_rate, clamp):
+        assembly = get_assembly(ls_lora).clone()
+        
         params = {
             "spectral_enabled": spectral_threshold > 0,
             "spectral_threshold": spectral_threshold,
@@ -105,104 +155,139 @@ class LS_Dynamics:
             "dare_rate": dare_rate,
             "clamp_quantile": clamp
         }
-        def callback(delta, b_idx, region, grp):
-            return TensorProcessor.apply_filters(delta, params, b_idx=b_idx)
-        new_sd = process_lora_dict(z_lora["sd"], callback)
-        return ({"sd": new_sd, "name": z_lora["name"], "metadata": z_lora.get("metadata", {})},)
+        
+        for mod in assembly.modules.values():
+            if params["spectral_enabled"] and not params["dare_enabled"] and params["clamp_quantile"] == 1.0:
+                mod.decompose()
+                if mod.s is not None:
+                    mod.s = torch.where(mod.s < spectral_threshold, torch.tensor(0.0, device=mod.s.device), mod.s)
+            else:
+                if mod.is_decomposed: mod.compose()
+                delta = mod.up.float() @ mod.down.float()
+                filtered = TensorProcessor.apply_filters(delta, params)
+                if filtered is not None:
+                    nd, nu, nr = MathKernel.svd_decomposition(filtered, mod.rank)
+                    mod.down = nd.to(dtype=torch.bfloat16)
+                    mod.up = nu.to(dtype=torch.bfloat16)
+                    mod.alpha = float(nr)
+                    mod.is_decomposed = False
+
+        return ({"assembly": assembly, "name": ls_lora.get("name", "dynamics_result")},)
 
 class LS_Eraser:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "z_lora": ("Z_LORA",),
+                "ls_lora": ("LS_LORA",),
                 "erase_blocks": ("STRING", {"default": "", "multiline": False}),
                 "erase_concepts": ("STRING", {"default": "", "multiline": False}),
             },
             "optional": {"clip": ("CLIP",),}
         }
-    RETURN_TYPES = ("Z_LORA",)
+    RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "process"
     CATEGORY = "Latent Shaper/Pipeline"
-    def process(self, z_lora, erase_blocks, erase_concepts, clip=None):
+    def process(self, ls_lora, erase_blocks, erase_concepts, clip=None):
+        assembly = get_assembly(ls_lora).clone()
+        spec = ModelRegistry.get_spec(list(assembly.modules.keys()))
         block_set = MathKernel.parse_block_string(erase_blocks)
-        concept_vectors = []
         
-        if erase_concepts and erase_concepts.strip():
-            if clip is None:
-                print("[Latent Shaper] Warning: 'erase_concepts' provided but CLIP input is missing.")
-            else:
-                for c in erase_concepts.split(","):
-                    c = c.strip()
-                    if not c: continue
-                    tokens = clip.tokenize(c)
-                    cond, _ = clip.encode_from_tokens(tokens, return_pooled=True)
-                    if cond.shape[1] > 0:
-                        vec = torch.mean(cond[0], dim=0).float() 
-                        vec = vec / (torch.norm(vec) + 1e-9)
-                        concept_vectors.append(vec.to("cuda" if torch.cuda.is_available() else "cpu"))
+        keys_to_remove = []
+        for name in assembly.modules.keys():
+            b_idx = spec.get_block_number(name)
+            if b_idx in block_set:
+                keys_to_remove.append(name)
         
-        params = {
-            "erase_blocks_set": block_set,
-            "concept_vectors": concept_vectors
-        }
-        def callback(delta, b_idx, region, grp):
-            return TensorProcessor.apply_filters(delta, params, b_idx=b_idx)
-        new_sd = process_lora_dict(z_lora["sd"], callback)
-        return ({"sd": new_sd, "name": z_lora["name"], "metadata": z_lora.get("metadata", {})},)
+        for k in keys_to_remove:
+            del assembly.modules[k]
+
+        if erase_concepts and erase_concepts.strip() and clip:
+            concept_vectors = []
+            for c in erase_concepts.split(","):
+                c = c.strip()
+                if not c: continue
+                tokens = clip.tokenize(c)
+                cond, _ = clip.encode_from_tokens(tokens, return_pooled=True)
+                if cond.shape[1] > 0:
+                    vec = torch.mean(cond[0], dim=0).float() 
+                    vec = vec / (torch.norm(vec) + 1e-9)
+                    concept_vectors.append(vec.to("cuda" if torch.cuda.is_available() else "cpu"))
+            
+            if concept_vectors:
+                for mod in assembly.modules.values():
+                    if mod.is_decomposed: mod.compose()
+                    delta = mod.up.float() @ mod.down.float()
+                    for vec in concept_vectors:
+                        delta = MathKernel.orthogonalize_rows_against_vector(delta, vec)
+                    
+                    nd, nu, nr = MathKernel.svd_decomposition(delta, mod.rank)
+                    mod.down = nd.to(dtype=torch.bfloat16)
+                    mod.up = nu.to(dtype=torch.bfloat16)
+                    mod.is_decomposed = False
+
+        return ({"assembly": assembly, "name": ls_lora.get("name", "eraser_result")},)
 
 class LS_Metadata:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "z_lora": ("Z_LORA",),
+                "ls_lora": ("LS_LORA",),
                 "new_name": ("STRING", {"default": ""}),
                 "trigger_words": ("STRING", {"default": ""}),
                 "description": ("STRING", {"default": "", "multiline": True}),
                 "merge_mode": (["Passthrough", "Replace", "Clear"],),
             }
         }
-    RETURN_TYPES = ("Z_LORA",)
+    RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "edit"
     CATEGORY = "Latent Shaper/Pipeline"
-    def edit(self, z_lora, new_name, trigger_words, description, merge_mode):
-        meta = z_lora.get("metadata", {}).copy()
-        if merge_mode == "Clear": meta = {}
+    def edit(self, ls_lora, new_name, trigger_words, description, merge_mode):
+        assembly = get_assembly(ls_lora).clone()
+        meta = assembly.metadata
+        
+        if merge_mode == "Clear": meta.clear()
         if merge_mode in ["Replace", "Clear"]:
             if new_name: meta["ss_output_name"] = new_name
             if trigger_words: meta["ss_tag_frequency"] = json.dumps({t.strip(): 1 for t in trigger_words.split(",") if t.strip()})
             if description: meta["modelspec.description"] = description
-        return ({"sd": z_lora["sd"], "name": z_lora["name"], "metadata": meta},)
+            
+        assembly.metadata = meta
+        return ({"assembly": assembly, "name": ls_lora.get("name", "meta_result")},)
 
 class LS_Analyzer:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"z_lora": ("Z_LORA",), "mode": (["Basic Stats", "Block Heatmap"],),}}
+        return {"required": {"ls_lora": ("LS_LORA",), "mode": (["Basic Stats", "Block Heatmap"],),}}
     RETURN_TYPES = ("IMAGE", "STRING")
     FUNCTION = "analyze"
     CATEGORY = "Latent Shaper/Pipeline"
-    def analyze(self, z_lora, mode):
-        sd = z_lora["sd"]
-        spec = ModelRegistry.get_spec(list(sd.keys()))
+    def analyze(self, ls_lora, mode):
+        assembly = get_assembly(ls_lora)
+        spec = ModelRegistry.get_spec(list(assembly.modules.keys()))
+        
         total_mag = 0.0
         count = 0
         block_energy = [0.0] * 30
-        for k, v in sd.items():
-            if "lora_down" in k:
-                mag = torch.mean(torch.abs(v.float())).item()
+        
+        for name, mod in assembly.modules.items():
+            # Safe access to down weights
+            if mod.down is not None:
+                mag = torch.mean(torch.abs(mod.down.float())).item()
                 total_mag += mag
                 count += 1
-                b_idx = spec.get_block_number(k)
+                b_idx = spec.get_block_number(name)
                 if 0 <= b_idx < 30: block_energy[b_idx] += mag
+            
         avg_mag = total_mag / count if count > 0 else 0
         
         plt.figure(figsize=(10, 4))
         if mode == "Block Heatmap":
             plt.bar(range(30), block_energy, color='skyblue')
-            plt.title(f"Block Energy ({z_lora.get('name')})")
+            plt.title(f"Block Energy ({ls_lora.get('name', 'Unknown')})")
         else:
-            plt.text(0.1, 0.5, f"Avg Mag: {avg_mag:.5f}\nKeys: {len(sd)}", fontsize=14)
+            plt.text(0.1, 0.5, f"Avg Mag: {avg_mag:.5f}\nModules: {len(assembly.modules)}", fontsize=14)
             plt.axis('off')
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight')
@@ -217,7 +302,7 @@ class LS_Save:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "z_lora": ("Z_LORA",),
+                "ls_lora": ("LS_LORA",),
                 "filename_prefix": ("STRING", {"default": "latent_shaper/my_lora"}),
                 "precision": (["FP16", "BF16", "FP32"],),
                 "save_metadata": ("BOOLEAN", {"default": True}),
@@ -227,7 +312,13 @@ class LS_Save:
     FUNCTION = "save"
     CATEGORY = "Latent Shaper/Pipeline"
     OUTPUT_NODE = True
-    def save(self, z_lora, filename_prefix, precision, save_metadata):
+    def save(self, ls_lora, filename_prefix, precision, save_metadata):
+        # Ensure we have a valid wrapper dict for save_ls_lora
+        # save_ls_lora expects {"assembly": ...}
+        wrapper = ls_lora
+        if "assembly" not in wrapper:
+            wrapper = {"assembly": get_assembly(ls_lora)}
+
         output_dir = folder_paths.get_output_directory()
         full_output_dir = os.path.dirname(os.path.join(output_dir, filename_prefix))
         base_name = os.path.basename(filename_prefix)
@@ -237,7 +328,7 @@ class LS_Save:
             filename = f"{base_name}_{counter:02d}.safetensors"
             counter += 1
         path = os.path.join(full_output_dir, filename)
-        save_z_lora(z_lora, path, precision, save_metadata)
+        save_ls_lora(wrapper, path, precision, save_metadata)
         return (path,)
 
 class LS_Apply:
@@ -247,12 +338,13 @@ class LS_Apply:
             "required": {
                 "model": ("MODEL",),
                 "clip": ("CLIP",),
-                "z_lora": ("Z_LORA",),
+                "ls_lora": ("LS_LORA",),
                 "strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01}),
             }
         }
     RETURN_TYPES = ("MODEL", "CLIP")
     FUNCTION = "apply"
     CATEGORY = "Latent Shaper/Pipeline"
-    def apply(self, model, clip, z_lora, strength):
-        return apply_lora_dict(model, clip, z_lora["sd"], strength)
+    def apply(self, model, clip, ls_lora, strength):
+        assembly = get_assembly(ls_lora)
+        return apply_lora_assembly(model, clip, assembly, strength)

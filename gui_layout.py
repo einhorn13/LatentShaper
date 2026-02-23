@@ -1,4 +1,3 @@
-# gui_layout.py
 
 import gradio as gr
 import gui_workspace
@@ -10,7 +9,6 @@ from gui.tabs.morph import create_morph_tab
 from gui.tabs.merge import create_merge_tab
 from gui.tabs.metadata_tab import create_metadata_tab
 from gui.tabs.queue_tab import create_queue_tab
-from gui.tabs.bridge import create_bridge_tab
 from gui.tabs.settings import create_settings_tab
 from gui.tabs.utils import create_utils_tab
 from gui.tabs.checkpoint_merge import create_checkpoint_merge_tab
@@ -31,7 +29,6 @@ def create_ui():
                     re = create_resize_tab()
                     mo = create_morph_tab()
                     ut = create_utils_tab()
-                    br = create_bridge_tab()
                     me = create_merge_tab()
                     ck = create_checkpoint_merge_tab()
                     md = create_metadata_tab()
@@ -49,7 +46,6 @@ def create_ui():
                 gr.update(choices=c), # Resize
                 gr.update(choices=c), # Morph
                 gr.update(choices=c), # Utils
-                gr.update(choices=c), # Bridge
                 gr.update(choices=c), # Merge
                 gr.update(choices=c), # Ckpt Merge A
                 gr.update(choices=c), # Ckpt Merge B
@@ -59,7 +55,7 @@ def create_ui():
             ]
 
         all_ws_drops = [
-            an["ws"], ex["base_ws"], ex["tuned_ws"], re["ws"], mo["ws"], ut["ws"], br["ws"], me["ws_drop"], 
+            an["ws"], ex["base_ws"], ex["tuned_ws"], re["ws"], mo["ws"], ut["ws"], me["ws_drop"], 
             ck["sel_a"]["ws"], ck["sel_b"]["ws"], ck["sel_c"]["ws"], ck["sel_lora"]["ws"], md["drop"]
         ]
         

@@ -1,4 +1,3 @@
-# gui/actions/submission.py
 
 import gradio as gr
 import os
@@ -81,17 +80,6 @@ def submit_morph(
     queue_manager.submit_job(job)
     return gr.Info("Queued: Morph")
 
-def submit_bridge(ws_in, disk_in, up_in, out_name, strength, save_ws):
-    inputs = resolve_path_priority(ws_in, disk_in, up_in)
-    if not inputs: return gr.Info("Error: Select source.")
-    try: final_out = validate_and_fix_filename(out_name, save_ws)
-    except ValueError as e: return gr.Warning(str(e))
-    
-    config = MorphConfig(is_bridge=True, strength=float(strength), save_to_workspace=save_ws)
-    job = MorphJob(config, [inputs[0]], final_out)
-    queue_manager.submit_job(job)
-    return gr.Info("Queued: Bridge")
-
 def submit_utils(ws_in, disk_in, up_in, out, prec, norm, alpha_mode, alpha_val, save_ws):
     inputs = resolve_path_priority(ws_in, disk_in, up_in)
     if not inputs: return gr.Info("Error: No files.")
@@ -173,9 +161,10 @@ def add_workspace_to_merge(selected_model, current_data):
         m = workspace.get_model(selected_model)
         rank = "?"
         if m:
-            for k, v in m.tensors.items():
-                if "lora_down" in k:
-                    rank = str(v.shape[0])
+            # Access rank via assembly modules
+            for mod in m.assembly.modules.values():
+                if mod.down is not None:
+                    rank = str(mod.down.shape[0])
                     break
         updated_data.append([selected_model, rank, 1.0])
     return updated_data, None

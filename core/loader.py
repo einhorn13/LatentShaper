@@ -1,8 +1,7 @@
-# core/loader.py
 
 import os
 import torch
-from typing import Dict, Union
+from typing import Dict, Union, Any
 from .structs import ModelReference, ModelSourceType
 from .io_manager import SafeStreamer
 from .workspace import WorkspaceManager
@@ -15,21 +14,28 @@ class ModelLoader:
     
     @staticmethod
     def load(ref: Union[str, ModelReference], device: str = "cpu") -> SafeStreamer:
-        # Backward compatibility for string paths
+        ws = WorkspaceManager()
+
+        # Handle string input
         if isinstance(ref, str):
-            ws = WorkspaceManager()
-            if ws.exists(ref):
-                ref = ModelReference(ref, ModelSourceType.WORKSPACE)
-            else:
-                ref = ModelReference(ref, ModelSourceType.DISK)
+            source_type = ModelSourceType.WORKSPACE if ws.exists(ref) else ModelSourceType.DISK
+            ref = ModelReference(ref, source_type)
+        
+        # Defensive check: if ModelReference is marked as DISK but file doesn't exist,
+        # check if it's actually a model in the Workspace (RAM).
+        if ref.source_type == ModelSourceType.DISK and not os.path.exists(ref.path):
+            if ws.exists(ref.path):
+                ref.source_type = ModelSourceType.WORKSPACE
 
         if ref.source_type == ModelSourceType.WORKSPACE:
-            ws = WorkspaceManager()
             model = ws.get_model(ref.path)
             if not model:
                 raise ValueError(f"Model '{ref.path}' not found in Workspace.")
-            # SafeStreamer supports memory dict source
-            return SafeStreamer(model.tensors, device=device, metadata=model.metadata)
+            
+            # Convert Assembly to Dict for SafeStreamer compatibility
+            # This creates a temporary copy of tensors, which is acceptable for streaming
+            tensors = model.assembly.to_state_dict()
+            return SafeStreamer(tensors, device=device, metadata=model.assembly.metadata)
         
         else:
             if not os.path.exists(ref.path):

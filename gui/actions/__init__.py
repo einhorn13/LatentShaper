@@ -1,4 +1,3 @@
-# gui/actions/__init__.py
 
 from .common import (
     get_workspace_choices,
@@ -46,8 +45,7 @@ from .submission import (
     clear_merge_list,
     normalize_weights_ui,
     distribute_weights_ui,
-    invert_weights_ui,
-    submit_bridge
+    invert_weights_ui
 )
 
-from .checkpoint_merge import submit_checkpoint_merge # Added
+from .checkpoint_merge import submit_checkpoint_merge

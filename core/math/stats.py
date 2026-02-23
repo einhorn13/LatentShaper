@@ -1,4 +1,3 @@
-# core/math/stats.py
 
 import torch
 import numpy as np
@@ -9,17 +8,29 @@ class MathStats:
 
     @staticmethod
     def calculate_stats_estimated(ld: torch.Tensor, lu: torch.Tensor, scale: float = 1.0, sample_size: int = 1024) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Estimates statistics by sampling the matrix product.
+        OPTIMIZED: Samples indices BEFORE casting to float to reduce memory bandwidth.
+        """
         out_dim, rank = lu.shape
         in_dim = ld.shape[1]
         
-        # Stride sampling
-        idx_u = torch.arange(0, out_dim, step=max(1, out_dim // sample_size), device=lu.device)[:sample_size]
-        sub_lu = torch.index_select(lu, 0, idx_u)
-        idx_d = torch.arange(0, in_dim, step=max(1, in_dim // sample_size), device=ld.device)[:sample_size]
-        sub_ld = torch.index_select(ld, 1, idx_d)
-            
+        # Stride sampling directly on the device
+        # Ensure we don't exceed dimensions
+        step_u = max(1, out_dim // sample_size)
+        step_d = max(1, in_dim // sample_size)
+        
+        # Slice raw tensors (BF16/FP16)
+        # Using slicing [::step] is faster than index_select for strided access
+        sub_lu = lu[0:out_dim:step_u]
+        sub_ld = ld[:, 0:in_dim:step_d]
+        
+        # Now cast to float for the MatMul
+        # This reconstruction is small (~1024x1024)
         delta = (sub_lu.float() @ sub_ld.float())
-        if scale != 1.0: delta.mul_(scale)
+        
+        if scale != 1.0: 
+            delta.mul_(scale)
             
         mag = torch.mean(torch.abs(delta))
         

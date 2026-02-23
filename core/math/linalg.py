@@ -1,4 +1,3 @@
-# core/math/linalg.py
 
 import torch
 import torch.nn.functional as F
@@ -11,11 +10,17 @@ class MathLinalg:
     def get_spectrum_fast(ld: torch.Tensor, lu: torch.Tensor, scale: float = 1.0) -> Tuple[torch.Tensor, float]:
         """
         Computes Singular Values via QR decomposition.
-        Robust against NaNs.
+        Optimized for memory and precision.
         """
-        ld_f = torch.nan_to_num(ld.float())
-        lu_f = torch.nan_to_num(lu.float())
+        # Keep input precision as long as possible.
+        # nan_to_num supports BF16/FP16 in newer PyTorch versions.
+        # We cast to float ONLY for the QR operation if on CPU.
         
+        # Check for NaN in original precision to avoid propagation
+        ld_safe = torch.nan_to_num(ld)
+        lu_safe = torch.nan_to_num(lu)
+        
+        # Helper to extract R from QR result
         def get_R(res):
             if isinstance(res, (tuple, list)) and len(res) >= 2:
                 return res[1]
@@ -24,20 +29,29 @@ class MathLinalg:
             return res
 
         try:
-            res_u = torch.linalg.qr(lu_f, mode='r')
+            # QR Decomposition
+            # CPU usually requires Float32 for QR. GPU might support Half.
+            # We defer .float() until here.
+            dtype_for_qr = torch.float32 
+            
+            res_u = torch.linalg.qr(lu_safe.to(dtype=dtype_for_qr), mode='r')
             R_u = get_R(res_u)
             
-            res_d = torch.linalg.qr(ld_f.mT, mode='r')
+            res_d = torch.linalg.qr(ld_safe.mT.to(dtype=dtype_for_qr), mode='r')
             R_d = get_R(res_d)
             
+            # Core matrix: Rank x Rank (Small!)
             core = R_u @ R_d.mT
             
             if scale != 1.0:
                 core.mul_(scale)
                 
+            # SVD on small core matrix
             S = torch.linalg.svdvals(core)
             energy = torch.sqrt(torch.sum(S**2))
-            return S, energy.item()
+            
+            return S.cpu(), energy.item() # Return CPU tensor to free VRAM/Thread memory
+            
         except Exception:
             # Fallback for degenerate matrices
             return torch.zeros(1), 0.0
@@ -46,6 +60,7 @@ class MathLinalg:
     def svd_decomposition(delta_w, rank, auto_rank_threshold=0.0, clamp_threshold=1e-6):
         orig_dtype = delta_w.dtype
         # CRITICAL: Ensure no NaNs or Infs enter SVD
+        # Cast to float32 for stability of SVD
         d_float = torch.nan_to_num(delta_w.float(), nan=0.0, posinf=0.0, neginf=0.0)
         
         # Hard clamp to remove noise floor before SVD
@@ -98,6 +113,7 @@ class MathLinalg:
 
     @staticmethod
     def resize_lora(ld, lu, new_rank, auto_rank_threshold=0.0):
+        # Cast to float for math stability
         delta = lu.float() @ ld.float()
         return MathLinalg.svd_decomposition(delta, new_rank, auto_rank_threshold, clamp_threshold=1e-8)
 

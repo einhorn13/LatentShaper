@@ -1,8 +1,6 @@
-# core/comfy_utils.py
 
 import torch
 import os
-import json
 import copy
 import comfy.utils
 import comfy.sd
@@ -12,6 +10,7 @@ from typing import Dict, Any, Optional, List, Callable, Tuple
 from .format_handler import FormatHandler
 from .math import MathKernel
 from .model_specs import ModelRegistry
+from .structs_assembly import LoRAAssembly, LoRAModule
 
 # --- DEVICE UTILS ---
 def get_optimal_device() -> str:
@@ -23,14 +22,15 @@ def get_optimal_device() -> str:
 
 # --- CACHING ---
 _CACHE_LIMIT = 10
-_LORA_CACHE: OrderedDict[str, Tuple[Dict[str, torch.Tensor], Dict[str, str]]] = OrderedDict()
+# Cache stores LoRAAssembly now
+_LORA_CACHE: OrderedDict[str, LoRAAssembly] = OrderedDict()
 
-def load_lora_cached(path: str) -> Tuple[Dict[str, torch.Tensor], Dict[str, str]]:
+def load_lora_cached(path: str) -> LoRAAssembly:
     global _LORA_CACHE
     if path in _LORA_CACHE:
         _LORA_CACHE.move_to_end(path)
-        sd, meta = _LORA_CACHE[path]
-        return {k: v.clone() for k, v in sd.items()}, copy.deepcopy(meta)
+        # Return a clone to prevent mutation of cached object by nodes
+        return _LORA_CACHE[path].clone()
     
     try:
         sd = comfy.utils.load_torch_file(path)
@@ -41,20 +41,30 @@ def load_lora_cached(path: str) -> Tuple[Dict[str, torch.Tensor], Dict[str, str]
                     metadata = f.metadata() or {}
             except Exception: pass 
         
+        assembly = LoRAAssembly.from_state_dict(sd, metadata)
+        
         if len(_LORA_CACHE) >= _CACHE_LIMIT:
             _LORA_CACHE.popitem(last=False)
             
-        _LORA_CACHE[path] = (sd, metadata)
-        return {k: v.clone() for k, v in sd.items()}, copy.deepcopy(metadata)
+        _LORA_CACHE[path] = assembly
+        return assembly.clone()
     except Exception as e:
         print(f"[Latent Shaper] Error loading {path}: {e}")
-        return {}, {}
+        return LoRAAssembly()
 
-def save_z_lora(z_lora: Dict, path: str, precision: str = "FP16", save_meta: bool = True) -> str:
+def save_ls_lora(ls_lora: Dict, path: str, precision: str = "FP16", save_meta: bool = True) -> str:
+    """
+    Saves LS_LORA (which wraps LoRAAssembly) to disk.
+    """
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        sd = z_lora.get("sd", {})
-        meta = z_lora.get("metadata", {}) if save_meta else {}
+        
+        assembly: LoRAAssembly = ls_lora.get("assembly")
+        if not assembly:
+            raise ValueError("No assembly found in LS_LORA")
+
+        sd = assembly.to_state_dict()
+        meta = assembly.metadata if save_meta else {}
         
         dtype_map = {"FP16": torch.float16, "BF16": torch.bfloat16, "FP32": torch.float32}
         target_dtype = dtype_map.get(precision, torch.float16)
@@ -71,95 +81,43 @@ def save_z_lora(z_lora: Dict, path: str, precision: str = "FP16", save_meta: boo
 
 # --- MATRIX OPS ---
 
-def reconstruct_matrix(state_dict: Dict[str, torch.Tensor], group, device: str) -> Optional[torch.Tensor]:
-    if not group: return None
-    if group.down_key not in state_dict or group.up_key not in state_dict: return None
-
-    try:
-        down = state_dict[group.down_key].to(device).float()
-        up = state_dict[group.up_key].to(device).float()
-        rank = down.shape[0]
-        scale = 1.0
-        if group.alpha_key and group.alpha_key in state_dict:
-            alpha_val = state_dict[group.alpha_key].item()
-            if rank > 0: scale = alpha_val / rank
-        return (up @ down) * scale
-    except Exception as e:
-        print(f"[Latent Shaper] Matrix reconstruction failed for {group.base_name}: {e}")
-        return None
-
-def apply_lora_dict(model, clip, lora_dict: Dict[str, torch.Tensor], strength: float):
-    if not lora_dict: return (model, clip)
+def apply_lora_assembly(model, clip, assembly: LoRAAssembly, strength: float):
+    """
+    Applies LoRAAssembly to ComfyUI Model/CLIP.
+    Requires converting back to state_dict temporarily.
+    """
+    if not assembly.modules: return (model, clip)
+    
+    # Convert to flat dict for ComfyUI's loader
+    lora_dict = assembly.to_state_dict()
+    
     print(f"[Latent Shaper] Patching model with {len(lora_dict)} keys (Strength: {strength})...")
     new_model, new_clip = comfy.sd.load_lora_for_models(
         model, clip, lora_dict, strength_model=strength, strength_clip=strength
     )
     return (new_model, new_clip)
 
-def process_lora_dict(sd: Dict[str, torch.Tensor], callback: Callable) -> Dict[str, torch.Tensor]:
-    keys = list(sd.keys())
-    # Use normalized grouping to handle internal consistency
-    groups = FormatHandler.group_keys(keys, normalize=True)
-    spec = ModelRegistry.get_spec(keys)
-    device = get_optimal_device()
-    new_sd = {}
-    
-    for grp in groups:
-        delta = reconstruct_matrix(sd, grp, device)
-        if delta is None: continue
-        
-        b_idx = spec.get_block_number(grp.base_name)
-        region = spec.get_region(b_idx)
-        
-        delta = callback(delta, b_idx, region, grp)
-        if delta is None: continue 
-        
-        orig_rank = sd[grp.down_key].shape[0]
-        delta = torch.nan_to_num(delta.float())
-        nd, nu, nr = MathKernel.svd_decomposition(delta, orig_rank)
-        
-        # Use ORIGINAL keys to ensure ComfyUI compatibility
-        new_sd[grp.down_key] = nd.to("cpu", dtype=torch.float16)
-        new_sd[grp.up_key] = nu.to("cpu", dtype=torch.float16)
-        if grp.alpha_key:
-            new_sd[grp.alpha_key] = torch.tensor(float(nr), dtype=torch.float16)
-            
-    return new_sd
-
 def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: int, global_strength: float) -> Dict[str, torch.Tensor]:
-    print(f"[Latent Shaper] Merging {len(active_loras)} LoRAs via {algorithm}...")
-
-    all_block_names = set()
-    max_input_rank = 0 
+    # Legacy merge support or refactor for Assembly?
+    # For now, let's keep the logic but adapt it to use Assemblies if passed.
+    # NOTE: This function was heavily dependent on raw dicts. 
+    # Since LS_Merger now receives LS_LORA (Assembly), we should rewrite it.
     
-    # Map: base_name -> {struct: str, prefix: str}
-    # Stores the naming convention of the first LoRA that has this block
-    block_naming = {}
-
+    print(f"[Latent Shaper] Merging {len(active_loras)} LoRAs via {algorithm}...")
+    
+    # Collect all unique block names
+    all_block_names = set()
+    
+    # Pre-load assemblies
     for item in active_loras:
-        if item["sd"] is None:
-            item["sd"], _ = load_lora_cached(item["path"])
+        if "assembly" not in item:
+            # Fallback for legacy dicts (should not happen with new nodes)
+            item["assembly"] = LoRAAssembly.from_state_dict(item.get("sd", {}))
         
-        keys = list(item["sd"].keys())
-        # Normalize keys to align blocks from different sources
-        grps = FormatHandler.group_keys(keys, normalize=True)
-        item["groups"] = {g.base_name: g for g in grps}
-        
-        for g in grps:
-            all_block_names.add(g.base_name)
-            
-            # Capture naming convention from the first source
-            if g.base_name not in block_naming:
-                block_naming[g.base_name] = {
-                    "struct": g.structure_name,
-                    "prefix": g.prefix
-                }
-            
-            if g.down_key in item["sd"]:
-                max_input_rank = max(max_input_rank, item["sd"][g.down_key].shape[0])
+        for name in item["assembly"].modules.keys():
+            all_block_names.add(name)
 
-    print(f"[Latent Shaper] Found {len(all_block_names)} unique blocks to merge.")
-    merged_sd = {}
+    merged_assembly = LoRAAssembly()
     device = get_optimal_device()
 
     for block_name in all_block_names:
@@ -169,26 +127,40 @@ def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: in
         
         # Find reference shape
         for item in active_loras:
-            grp = item["groups"].get(block_name)
-            if grp:
-                mat = reconstruct_matrix(item["sd"], grp, "cpu")
-                if mat is not None:
-                    ref_shape = mat.shape
-                    break
+            mod = item["assembly"].modules.get(block_name)
+            if mod:
+                # Reconstruct matrix on CPU/Device
+                # We need full matrix for merging usually
+                if mod.is_decomposed: mod.compose()
+                mat = (mod.up.float() @ mod.down.float())
+                
+                # Apply alpha scaling
+                scale = mod.alpha / mod.rank if mod.rank > 0 else 1.0
+                mat *= scale
+                
+                ref_shape = mat.shape
+                del mat
+                break
         
         if ref_shape is None: continue
 
         for item in active_loras:
-            grp = item["groups"].get(block_name)
-            if not grp:
+            mod = item["assembly"].modules.get(block_name)
+            ratio = item["ratio"]
+            
+            if not mod:
                 mat = torch.zeros(ref_shape, device=device, dtype=torch.float32)
             else:
-                mat = reconstruct_matrix(item["sd"], grp, device)
-                if mat is None or mat.shape != ref_shape:
-                    mat = torch.zeros(ref_shape, device=device, dtype=torch.float32)
+                if mod.is_decomposed: mod.compose()
+                mat = (mod.up.to(device).float() @ mod.down.to(device).float())
+                scale = mod.alpha / mod.rank if mod.rank > 0 else 1.0
+                mat *= scale
+                
+                if mat.shape != ref_shape:
+                     mat = torch.zeros(ref_shape, device=device, dtype=torch.float32)
             
             deltas.append(mat)
-            ratios.append(item["ratio"])
+            ratios.append(ratio)
 
         final_delta = None
         
@@ -217,23 +189,25 @@ def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: in
 
         if global_strength != 1.0: final_delta *= global_strength
 
-        final_target_rank = target_rank if target_rank > 0 else max_input_rank
-        if final_target_rank < 1: final_target_rank = 64
-
+        final_target_rank = target_rank if target_rank > 0 else 64
+        
         final_delta = torch.nan_to_num(final_delta.float())
         new_down, new_up, new_rank = MathKernel.svd_decomposition(final_delta, final_target_rank)
 
-        # FIX: Reconstruct key using EXACTLY the original prefix and structure
-        naming = block_naming.get(block_name)
-        prefix = naming["prefix"]
-        struct = naming["struct"]
+        # Create new module
+        new_mod = LoRAModule(
+            new_down.to("cpu", dtype=torch.float16),
+            new_up.to("cpu", dtype=torch.float16),
+            float(new_rank)
+        )
+        merged_assembly.modules[block_name] = new_mod
         
-        base_key = f"{prefix}{struct}"
-        
-        merged_sd[f"{base_key}.lora_down.weight"] = new_down.to("cpu", dtype=torch.float16)
-        merged_sd[f"{base_key}.lora_up.weight"] = new_up.to("cpu", dtype=torch.float16)
-        merged_sd[f"{base_key}.alpha"] = torch.tensor(float(new_rank), dtype=torch.float16)
+        # Copy key mapping from first source that has this block
+        for item in active_loras:
+            if block_name in item["assembly"].key_map:
+                merged_assembly.key_map[block_name] = item["assembly"].key_map[block_name]
+                break
 
         del deltas, final_delta, new_down, new_up
 
-    return merged_sd
+    return merged_assembly.to_state_dict()

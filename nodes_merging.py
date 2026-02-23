@@ -1,7 +1,7 @@
-# nodes_merging.py
 
 import folder_paths
 from .core.comfy_utils import process_merge_dict, load_lora_cached
+from .core.structs_assembly import LoRAAssembly
 
 class LS_Merger:
     """
@@ -20,14 +20,14 @@ class LS_Merger:
         }
         
         for i in range(1, 7):
-            inputs["optional"][f"z_lora_{i}"] = ("Z_LORA",)
+            inputs["optional"][f"ls_lora_{i}"] = ("LS_LORA",)
             inputs["optional"][f"lora_name_{i}"] = (folder_paths.get_filename_list("loras"),)
             inputs["optional"][f"weight_{i}"] = ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01})
             
         return inputs
 
-    RETURN_TYPES = ("Z_LORA",)
-    RETURN_NAMES = ("z_lora",)
+    RETURN_TYPES = ("LS_LORA",)
+    RETURN_NAMES = ("ls_lora",)
     FUNCTION = "merge"
     CATEGORY = "Latent Shaper/Merging"
 
@@ -35,31 +35,39 @@ class LS_Merger:
         active_loras = []
         
         for i in range(1, 7):
-            z_lora = kwargs.get(f"z_lora_{i}")
+            ls_lora = kwargs.get(f"ls_lora_{i}")
             name = kwargs.get(f"lora_name_{i}")
             weight = kwargs.get(f"weight_{i}", 1.0)
             
-            sd = None
+            assembly = None
             source_name = "Unknown"
             
-            if z_lora is not None:
-                sd = z_lora.get("sd")
-                source_name = z_lora.get("name", f"Input_{i}")
+            if ls_lora is not None:
+                # Robustly handle input format
+                if "assembly" in ls_lora:
+                    assembly = ls_lora["assembly"]
+                elif "sd" in ls_lora:
+                    assembly = LoRAAssembly.from_state_dict(ls_lora["sd"], ls_lora.get("metadata"))
+                
+                source_name = ls_lora.get("name", f"Input_{i}")
+                
             elif name and name != "None":
                 path = folder_paths.get_full_path("loras", name)
-                sd, _ = load_lora_cached(path)
+                assembly = load_lora_cached(path)
                 source_name = name
             
-            if sd is not None and weight != 0:
+            if assembly is not None and weight != 0:
                 active_loras.append({
-                    "sd": sd,
+                    "assembly": assembly,
                     "ratio": weight,
                     "path": source_name
                 })
         
         if not active_loras:
             print("[Latent Shaper] Warning: No valid inputs provided for merge.")
-            return ({"sd": {}, "name": "Empty_Merge"},)
+            return ({"assembly": LoRAAssembly(), "name": "Empty_Merge"},)
 
         merged_sd = process_merge_dict(active_loras, algorithm, target_rank, global_strength)
-        return ({"sd": merged_sd, "name": "Merged_Result"},)
+        merged_assembly = LoRAAssembly.from_state_dict(merged_sd)
+        
+        return ({"assembly": merged_assembly, "name": "Merged_Result"},)

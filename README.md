@@ -104,10 +104,10 @@ On the first launch of the GUI, go to the **Settings** tab to configure your `ch
 # History updates
 
 0.02:
-	Plugin Engine - supporting core/architectures	
-	Anima-Preview Support
-	Dynamic UI
-	Robust Key Handling
-	Bugfixes
+- Plugin Engine - supporting core/architectures	
+- Anima-Preview Support
+- Dynamic UI
+- Robust Key Handling
+- Bugfixes
 
 

@@ -1,6 +1,6 @@
 # Latent Shaper
 
-**Advanced toolkit for analyzing, processing, and merging LoRAs for Z-Image Turbo (S3-DiT) and SDXL architectures.**
+Advanced toolkit for **analyzing, processing, and merging** LoRAs for **Z-Image Turbo, Anima** and other architectures.
 
 This project provides both a standalone **Gradio GUI** for deep model inspection/editing and a suite of **ComfyUI Custom Nodes** for complex pipeline workflows.
 
@@ -104,10 +104,9 @@ On the first launch of the GUI, go to the **Settings** tab to configure your `ch
 # History updates
 
 0.02:
-	Plugin Engine - supporting core/architectures	
-	Anima-Preview Support
-	Dynamic UI
-	Robust Key Handling
-	Bugfixes
-
+- Plugin Engine - supporting core/architectures	
+- Anima-Preview Support
+- Dynamic UI
+- Robust Key Handling
+- Bugfixes
 

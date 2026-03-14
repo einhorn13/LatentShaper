@@ -1,4 +1,3 @@
-# core/pipeline/operations.py
 
 import torch
 import time
@@ -12,7 +11,7 @@ from collections import defaultdict
 from ..io_manager import SafeStreamer
 from ..math import MathKernel
 from ..format_handler import FormatHandler
-from ..model_specs import ModelRegistry, ZImageTurboSpec
+from ..model_specs import ModelRegistry
 from ..naming import NamingManager
 from ..logger import Logger
 from .transform import TransformMixin
@@ -63,9 +62,11 @@ class OperationsMixin(TransformMixin, CombineMixin):
                 })
 
             results = []
-            heatmap_data = np.zeros((30, 7)) if isinstance(spec, ZImageTurboSpec) else None
             
-            # FIX: Lock for shared resource (heatmap_data)
+            # Dynamic Heatmap Initialization
+            h_dim = spec.get_heatmap_dimensions()
+            heatmap_data = np.zeros(h_dim) if h_dim != (0, 0) else None
+            
             heatmap_lock = threading.Lock()
             
             max_workers = min(os.cpu_count() or 4, 16)
@@ -79,7 +80,8 @@ class OperationsMixin(TransformMixin, CombineMixin):
                     
                     if heatmap_data is not None:
                         b_idx, c_idx = res["block_idx"], res["comp_idx"]
-                        if 0 <= b_idx < 30 and 0 <= c_idx < 7:
+                        # Dynamic bounds check based on architecture spec
+                        if 0 <= b_idx < h_dim[0] and 0 <= c_idx < h_dim[1]:
                             with heatmap_lock:
                                 heatmap_data[b_idx, c_idx] = res["energy"]
                                 

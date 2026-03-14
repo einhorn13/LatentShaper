@@ -1,4 +1,3 @@
-# core/services/extractor.py
 
 import torch
 import os
@@ -11,6 +10,8 @@ from ..math import MathKernel
 from ..format_handler import FormatHandler
 from ..naming import NamingManager
 from ..logger import Logger
+from ..model_specs import ModelRegistry
+from ..architectures.base import UnknownArchitecture
 
 class ExtractorService(BaseService):
     def process(
@@ -27,13 +28,19 @@ class ExtractorService(BaseService):
         yield 0.0, "Initializing Extraction..."
         
         try:
-            # Load Base
             with self._resolve_source(base_ref) as base_io:
                 if base_io.load_error:
                     raise ValueError(f"Failed to load Base: {base_io.load_error}")
 
-                # Create normalized map for base keys
-                base_map = {FormatHandler.fix_key_name(k): k for k in base_io.keys}
+                spec = ModelRegistry.get_spec(base_io.keys)
+                
+                # SAFETY ABORT
+                if isinstance(spec, UnknownArchitecture):
+                    raise ValueError("Base model architecture is not supported by any plugin.")
+                    
+                Logger.info(f"Extractor detected architecture: {spec.name}")
+
+                base_map = {FormatHandler.fix_key_name(k, spec): k for k in base_io.keys}
                 
                 for idx, tuned_ref in enumerate(tuned_refs):
                     filename = tuned_ref.name
@@ -46,15 +53,13 @@ class ExtractorService(BaseService):
                         intersection = []
                         stats = {"bias_skipped": 0, "no_match": 0, "shape_mismatch": 0, "dim_skipped": 0}
 
-                        # Find matching keys
                         for t_key in tuned_io.keys:
                             if not t_key.endswith(".weight"): continue
                             if "bias" in t_key: 
                                 stats["bias_skipped"] += 1
                                 continue
                             
-                            norm_t = FormatHandler.fix_key_name(t_key)
-                            # Try exact match on normalized key
+                            norm_t = FormatHandler.fix_key_name(t_key, spec)
                             if norm_t in base_map:
                                 intersection.append((t_key, base_map[norm_t]))
                             else:
@@ -75,38 +80,31 @@ class ExtractorService(BaseService):
                                 
                                 if w_tuned is None or w_base is None: continue
                                 
+                                w_tuned = spec.preprocess_tensor(t_key, w_tuned)
+                                w_base = spec.preprocess_tensor(b_key, w_base)
+                                
                                 if w_tuned.shape != w_base.shape:
                                     if w_tuned.numel() == w_base.numel(): w_base = w_base.view_as(w_tuned)
                                     else:
                                         stats["shape_mismatch"] += 1
                                         continue
                                 
-                                # Allow 1D (Norms), 2D (Linear), 4D (Conv)
                                 if len(w_tuned.shape) not in [1, 2, 4]:
                                     stats["dim_skipped"] += 1
                                     continue
 
-                                # Delta
                                 delta = w_tuned.float() - w_base.float()
                                 
-                                # Threshold
                                 if config.threshold > 0:
                                     delta[torch.abs(delta) < config.threshold] = 0.0
                                 
-                                # Scale
                                 if config.baked_scale != 1.0:
                                     delta *= config.baked_scale
 
-                                # Prepare for SVD
                                 delta_flat = None
-                                is_conv = False
-                                if len(delta.shape) == 2: 
-                                    delta_flat = delta
-                                elif len(delta.shape) == 4: 
-                                    delta_flat = delta.reshape(delta.shape[0], -1)
-                                    is_conv = True
-                                elif len(delta.shape) == 1:
-                                    delta_flat = delta.unsqueeze(1) # Rank 1 for vectors
+                                if len(delta.shape) == 2: delta_flat = delta
+                                elif len(delta.shape) == 4: delta_flat = delta.reshape(delta.shape[0], -1)
+                                elif len(delta.shape) == 1: delta_flat = delta.unsqueeze(1) 
 
                                 if delta_flat is None: continue
 
@@ -117,8 +115,7 @@ class ExtractorService(BaseService):
                                     delta_flat, local_rank, clamp_threshold=config.threshold
                                 )
                                 
-                                # Naming
-                                safe_name = FormatHandler.convert_to_kohya_key(b_key)
+                                safe_name = FormatHandler.convert_to_kohya_key(b_key, spec)
                                 alpha = float(config.manual_alpha) if config.manual_alpha is not None else float(eff_rank)
                                 
                                 output_tensors[f"{safe_name}.lora_down.weight"] = ld.to(dtype=torch.bfloat16)
@@ -131,11 +128,11 @@ class ExtractorService(BaseService):
                                 Logger.error(f"Error extracting {t_key}: {e}")
                                 continue
 
-                        # Save
                         meta = {
                             "ss_network_dim": str(config.rank),
                             "ss_network_alpha": str(config.manual_alpha if config.manual_alpha else config.rank),
-                            "modelspec.title": f"Extracted {filename}"
+                            "modelspec.title": f"Extracted {filename}",
+                            "modelspec.architecture": spec.name
                         }
                         
                         if config.save_to_workspace:

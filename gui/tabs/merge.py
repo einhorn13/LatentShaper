@@ -1,4 +1,3 @@
-# gui/tabs/merge.py
 
 import gradio as gr
 from gui.actions import (
@@ -9,13 +8,12 @@ from gui.actions import (
     normalize_weights_ui, 
     submit_merge
 )
-# Import new actions
 from gui.actions.submission import distribute_weights_ui, invert_weights_ui
 
 def create_merge_tab():
     with gr.TabItem("Merge", id="Merge"):
         gr.Markdown("### 🔗 Multi-LoRA Merging")
-        gr.Markdown("Combine multiple models using advanced algorithms. Supports **Negative Weights** for subtraction.")
+        gr.Markdown("Combine multiple models using advanced algorithms. Models must share the same **Architecture**.")
         
         merge_state = gr.State({})
         
@@ -33,19 +31,18 @@ def create_merge_tab():
                     clear_btn = gr.Button("🗑️ Clear", variant="secondary", size="sm")
 
             with gr.Column(scale=3):
+                # UPDATED: Added Arch column
                 me_table = gr.Dataframe(
-                    headers=["Filename", "Rank", "Mix Ratio"], 
-                    column_count=(3, "fixed"), 
+                    headers=["Filename", "Rank", "Arch", "Mix Ratio"], 
+                    column_count=(4, "fixed"), 
                     interactive=True, 
-                    datatype=["str", "str", "number"],
+                    datatype=["str", "str", "str", "number"],
                     label="Merge Composition"
                 )
         
-        # Data Loading
-        me_files.upload(add_files_to_merge, [me_files, me_table, merge_state], [me_table, merge_state, me_files])
-        me_ws_drop.change(add_workspace_to_merge, [me_ws_drop, me_table], [me_table, me_ws_drop])
+        me_files.upload(add_files_to_merge, [me_files, me_table, merge_state],[me_table, merge_state, me_files])
+        me_ws_drop.change(add_workspace_to_merge,[me_ws_drop, me_table], [me_table, me_ws_drop])
         
-        # Tool Actions
         clear_btn.click(clear_merge_list, outputs=[me_table, merge_state, me_files])
         norm_btn.click(normalize_weights_ui, me_table, me_table)
         dist_btn.click(distribute_weights_ui, me_table, me_table)
@@ -54,8 +51,7 @@ def create_merge_tab():
         gr.Markdown("---")
         with gr.Row():
             with gr.Column(scale=1):
-                me_algo = gr.Dropdown(
-                    ["SVD (Smart Blend)", "Concat (Lossless)", "Orthogonal (Unique)", "TIES (Conflict Fix)", "SLERP (Geodesic 2-Model)"], 
+                me_algo = gr.Dropdown(["SVD (Smart Blend)", "Concat (Lossless)", "Orthogonal (Unique)", "TIES (Conflict Fix)", "SLERP (Geodesic 2-Model)"], 
                     value="SVD (Smart Blend)", label="Algorithm",
                     info="SVD is best for Turbo. TIES handles sign conflicts well."
                 )
@@ -64,7 +60,6 @@ def create_merge_tab():
             with gr.Column(scale=1):
                 me_str = gr.Slider(0.1, 5.0, 1.0, label="Global Strength", info="Master multiplier.")
         
-        # Hidden defaults for advanced merge params
         with gr.Row(visible=False):
             me_auto_rank = gr.Checkbox(value=False)
             me_auto_thr = gr.Number(value=0.0)
@@ -79,8 +74,7 @@ def create_merge_tab():
         me_save_ws.change(toggle_output_input, me_save_ws, me_out)
         
         gr.Button("Start Merge", variant="primary", size="lg").click(
-            submit_merge, 
-            [me_table, merge_state, me_rank, me_out, me_algo, me_str, me_auto_rank, me_auto_thr, me_prune, me_prune_thr, me_ties_dens, me_save_ws], 
+            submit_merge,[me_table, merge_state, me_rank, me_out, me_algo, me_str, me_auto_rank, me_auto_thr, me_prune, me_prune_thr, me_ties_dens, me_save_ws], 
             None
         )
 

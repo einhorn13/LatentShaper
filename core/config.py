@@ -1,22 +1,21 @@
-# core/config.py
 
 import os
 import json
 from typing import Any, Dict
+from .logger import Logger
 
 class ConfigManager:
     """
     Singleton to manage application settings.
-    Stores config in 'config.json' in the application root.
+    Enhanced with Environment Variable support and robust path discovery.
     """
     _instance = None
     _config_path = "config.json"
     
-    # Default settings
     _defaults = {
         "output_dir": "output",
-        "checkpoints_dir": "",  # Path to base checkpoints
-        "loras_dir": ""         # Path to LoRAs
+        "checkpoints_dir": "",
+        "loras_dir": ""
     }
 
     def __new__(cls):
@@ -28,40 +27,65 @@ class ConfigManager:
         return cls._instance
 
     def load(self):
-        """Loads config from disk, creating default if missing."""
         if os.path.exists(self._config_path):
             try:
                 with open(self._config_path, 'r', encoding='utf-8') as f:
                     user_config = json.load(f)
+                    # Support for legacy Windows paths in JSON: ensure they are handled safely
                     self._data.update(user_config)
             except Exception as e:
-                print(f"Error loading config: {e}")
+                Logger.error(f"Error loading config.json: {e}")
         else:
             self.save()
 
     def save(self):
-        """Saves current config to disk."""
         try:
             with open(self._config_path, 'w', encoding='utf-8') as f:
                 json.dump(self._data, f, indent=4)
         except Exception as e:
-            print(f"Error saving config: {e}")
+            Logger.error(f"Error saving config: {e}")
 
     def _auto_discover_paths(self):
-        """Attempts to find ComfyUI model directories if not set."""
-        # Assuming script is in ComfyUI/custom_nodes/Z-Image-Turbo-Tool/
-        # We go up 3 levels to reach ComfyUI root
-        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-        models_path = os.path.join(base_path, "models")
-        
-        if os.path.exists(models_path):
-            if not self._data["checkpoints_dir"]:
-                ckpt = os.path.join(models_path, "checkpoints")
-                if os.path.exists(ckpt): self._data["checkpoints_dir"] = ckpt
-            
-            if not self._data["loras_dir"]:
-                loras = os.path.join(models_path, "loras")
-                if os.path.exists(loras): self._data["loras_dir"] = loras
+        """
+        Attempts to find ComfyUI model directories using ENV vars or relative structure.
+        Priority: 1. User Config, 2. ENV Vars, 3. Relative Discovery.
+        """
+        # Check ENV variables first (standard for containers/installers)
+        env_ckpt = os.environ.get("COMFYUI_CHECKPOINTS")
+        env_loras = os.environ.get("COMFYUI_LORAS")
+        env_root = os.environ.get("COMFYUI_PATH")
+
+        # 1. Checkpoint Dir
+        if not self._data.get("checkpoints_dir") or not os.path.exists(self._data["checkpoints_dir"]):
+            if env_ckpt and os.path.exists(env_ckpt):
+                self._data["checkpoints_dir"] = env_ckpt
+            elif env_root:
+                p = os.path.join(env_root, "models", "checkpoints")
+                if os.path.exists(p): self._data["checkpoints_dir"] = p
+            else:
+                # Relative fallback from custom_nodes/LatentShaper/core/
+                try:
+                    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+                    p = os.path.join(base, "models", "checkpoints")
+                    if os.path.exists(p): self._data["checkpoints_dir"] = p
+                except: pass
+
+        # 2. LoRA Dir
+        if not self._data.get("loras_dir") or not os.path.exists(self._data["loras_dir"]):
+            if env_loras and os.path.exists(env_loras):
+                self._data["loras_dir"] = env_loras
+            elif env_root:
+                p = os.path.join(env_root, "models", "loras")
+                if os.path.exists(p): self._data["loras_dir"] = p
+            else:
+                try:
+                    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+                    p = os.path.join(base, "models", "loras")
+                    if os.path.exists(p): self._data["loras_dir"] = p
+                except: pass
+
+        if not self._data["checkpoints_dir"]:
+            Logger.warning("ConfigManager: Checkpoints directory not found. Please set it in Settings.")
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)

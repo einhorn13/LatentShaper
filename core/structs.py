@@ -1,7 +1,6 @@
-# core/structs.py
 
 from enum import Enum, auto
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional, Union
 import time
 import uuid
@@ -20,7 +19,7 @@ class ModelSourceType(Enum):
 
 @dataclass
 class ModelReference:
-    path: str # File path or Workspace Key
+    path: str
     source_type: ModelSourceType = ModelSourceType.DISK
 
     @property
@@ -30,29 +29,35 @@ class ModelReference:
 
 class BaseJob(ABC):
     """
-    Abstract Command Pattern for Jobs.
-    Encapsulates the execution logic.
+    Enhanced Job structure with timing, logs and parameter storage.
     """
-    def __init__(self, description: str = "Task"):
+    def __init__(self, description: str = "Task", config: Any = None):
         self.id: str = str(uuid.uuid4())[:8]
         self.created_at: float = time.time()
+        self.started_at: Optional[float] = None
+        self.finished_at: Optional[float] = None
+        
         self.status: JobStatus = JobStatus.PENDING
         self.progress: float = 0.0
         self.message: str = "Queued"
         self.description: str = description
-        self.result: Any = None
-        self.error: Optional[str] = None
+        
+        # Store configuration for "Recall Parameters"
+        self.config_data: Dict[str, Any] = asdict(config) if config else {}
+        self.logs: str = "" # Per-job stdout/stderr/traceback
         self._cancel_flag: bool = False
+
+    @property
+    def duration(self) -> float:
+        if not self.started_at: return 0.0
+        end = self.finished_at or time.time()
+        return end - self.started_at
 
     @abstractmethod
     def run(self):
-        """
-        Execute the job logic. Should yield (progress, message) tuples if possible,
-        or update self.progress/self.message directly.
-        """
         pass
 
     def cancel(self):
         self._cancel_flag = True
         self.status = JobStatus.CANCELLED
-        self.message = "Cancelled"
+        self.message = "Cancelled by user"

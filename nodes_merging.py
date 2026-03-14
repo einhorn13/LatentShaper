@@ -2,6 +2,7 @@
 import folder_paths
 from .core.comfy_utils import process_merge_dict, load_lora_cached
 from .core.structs_assembly import LoRAAssembly
+from .core.model_specs import ModelRegistry
 
 class LS_Merger:
     """
@@ -43,7 +44,6 @@ class LS_Merger:
             source_name = "Unknown"
             
             if ls_lora is not None:
-                # Robustly handle input format
                 if "assembly" in ls_lora:
                     assembly = ls_lora["assembly"]
                 elif "sd" in ls_lora:
@@ -66,6 +66,16 @@ class LS_Merger:
         if not active_loras:
             print("[Latent Shaper] Warning: No valid inputs provided for merge.")
             return ({"assembly": LoRAAssembly(), "name": "Empty_Merge"},)
+
+        # Architecture consistency check
+        architectures = set()
+        for item in active_loras:
+            spec = ModelRegistry.get_spec(list(item["assembly"].modules.keys()))
+            architectures.add(spec.name)
+            
+        if len(architectures) > 1:
+            print(f"\n[Latent Shaper] ⚠️ WARNING: Merging LoRAs with DIFFERENT architectures: {architectures}")
+            print("[Latent Shaper] This usually results in a broken or disjointed model.\n")
 
         merged_sd = process_merge_dict(active_loras, algorithm, target_rank, global_strength)
         merged_assembly = LoRAAssembly.from_state_dict(merged_sd)

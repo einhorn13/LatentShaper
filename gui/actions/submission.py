@@ -6,6 +6,8 @@ from core.jobs import ExtractJob, ResizeJob, MorphJob, MergeJob, UtilsJob
 from .common import resolve_path_priority, validate_and_fix_filename
 from ..context import queue_manager
 
+# ...[submit_extract, submit_resize, submit_morph, submit_utils remain unchanged] ...
+
 def submit_extract(base_ws, base_disk, tuned_ws, tuned_disk, tuned_upload, rank, threshold, scale, alpha, out, save_ws):
     base_paths = resolve_path_priority(base_ws, base_disk, None)
     if not base_paths: return gr.Info("Error: Select Base Model.")
@@ -17,13 +19,9 @@ def submit_extract(base_ws, base_disk, tuned_ws, tuned_disk, tuned_upload, rank,
     except ValueError as e: return gr.Warning(str(e))
     
     config = ExtractConfig(
-        rank=int(rank),
-        threshold=float(threshold),
-        baked_scale=float(scale),
-        manual_alpha=float(alpha) if alpha > 0 else None,
-        save_to_workspace=save_ws
+        rank=int(rank), threshold=float(threshold), baked_scale=float(scale),
+        manual_alpha=float(alpha) if alpha > 0 else None, save_to_workspace=save_ws
     )
-    
     job = ExtractJob(config, base_paths[0], tuned_paths, final_out)
     queue_manager.submit_job(job)
     return gr.Info(f"Queued: Extract {len(tuned_paths)} models")
@@ -34,19 +32,14 @@ def submit_resize(ws_in, disk_in, up_in, rank, out, auto_rank_chk, auto_rank_thr
     try: final_out = validate_and_fix_filename(out, save_ws)
     except ValueError as e: return gr.Warning(str(e))
     
-    config = ResizeConfig(
-        rank=int(rank),
-        auto_rank_threshold=float(auto_rank_thr) if auto_rank_chk else 0.0,
-        save_to_workspace=save_ws
-    )
-    
+    config = ResizeConfig(rank=int(rank), auto_rank_threshold=float(auto_rank_thr) if auto_rank_chk else 0.0, save_to_workspace=save_ws)
     job = ResizeJob(config, inputs, final_out)
     queue_manager.submit_job(job)
     return gr.Info("Queued: Resize")
 
 def submit_morph(
     ws_in, disk_in, up_in, out_name, 
-    eq_global, eq_in, eq_mid, eq_out, eq_interpolate,
+    eq_global, eq_in, eq_mid, eq_out, eq_adapter, eq_other, eq_interpolate,
     temp_val, fft_cutoff, clamp_val, fix_alpha_chk,
     filter_chk, filter_thr, filter_inv, filter_adaptive,
     dare_chk, dare_rate, 
@@ -62,7 +55,8 @@ def submit_morph(
     except ValueError as e: return gr.Warning(str(e))
     
     config = MorphConfig(
-        eq_global=float(eq_global), eq_in=float(eq_in), eq_mid=float(eq_mid), eq_out=float(eq_out),
+        eq_global=float(eq_global), eq_in=float(eq_in), eq_mid=float(eq_mid), 
+        eq_out=float(eq_out), eq_adapter=float(eq_adapter), eq_other=float(eq_other),
         eq_interpolate=eq_interpolate,
         temperature=float(temp_val), fft_cutoff=float(fft_cutoff), clamp_quantile=float(clamp_val),
         fix_alpha=fix_alpha_chk,
@@ -87,13 +81,10 @@ def submit_utils(ws_in, disk_in, up_in, out, prec, norm, alpha_mode, alpha_val, 
     except ValueError as e: return gr.Warning(str(e))
     
     config = UtilsConfig(
-        precision=prec,
-        normalize_keys=norm,
-        save_to_workspace=save_ws,
+        precision=prec, normalize_keys=norm, save_to_workspace=save_ws,
         alpha_equals_rank=(alpha_mode == "Sync with Rank"),
         target_alpha=float(alpha_val) if alpha_mode == "Set Custom" else None
     )
-    
     job = UtilsJob(config, inputs, final_out)
     queue_manager.submit_job(job)
     return gr.Info("Queued: Utils")
@@ -105,16 +96,27 @@ def submit_merge(w_data, path_map, rank, out, algo_raw, global_str, auto_rank_ch
     except ValueError as e: return gr.Warning(str(e))
     
     from ..context import workspace
-    files, ratios = [], []
+    files, ratios = [],[]
+    architectures = set()
+    
     for row in w_data:
-        if not row or len(row) < 3: continue
+        if not row or len(row) < 4: continue
         fname = row[0]
+        arch = row[2]
+        
+        if arch and arch != "Unknown Architecture":
+            architectures.add(arch)
+            
         if path_map and fname in path_map: files.append(path_map[fname])
         elif workspace.exists(fname): files.append(fname)
         else: continue
-        ratios.append(float(row[2]))
+        ratios.append(float(row[3]))
             
     if not files: return gr.Info("Error: No valid models.")
+    
+    # SAFETY CHECK: Prevent merging incompatible architectures
+    if len(architectures) > 1:
+        return gr.Warning(f"❌ Aborted: Cannot merge incompatible architectures: {', '.join(architectures)}")
     
     algo = algo_raw.split(" ")[0] if algo_raw else "SVD"
     config = MergeConfig(
@@ -123,7 +125,6 @@ def submit_merge(w_data, path_map, rank, out, algo_raw, global_str, auto_rank_ch
         pruning_threshold=float(prune_thr) if prune_chk else 0.0,
         ties_density=float(ties_density), save_to_workspace=save_ws
     )
-    
     job = MergeJob(config, files, final_out)
     queue_manager.submit_job(job)
     return gr.Info("Queued: Merge")
@@ -135,55 +136,70 @@ def add_files_to_merge(new_files, current_data, current_map):
     existing = {row[0] for row in updated_data}
     
     from core.loader import ModelLoader
+    from core.model_specs import ModelRegistry
     
     for f in new_files:
         path = f.name if hasattr(f, 'name') else str(f)
         fname = os.path.basename(path)
         if fname not in existing:
             rank = "?"
+            arch = "Unknown"
             try:
                 with ModelLoader.load(path) as io:
+                    # Detect Architecture
+                    spec = ModelRegistry.get_spec(io.keys)
+                    arch = spec.name
+                    
+                    # Detect Rank
                     for k in io.keys:
-                        if "lora_down" in k:
+                        if "lora_down" in k or "down_proj" in k:
                             rank = str(io.get_tensor(k).shape[0])
                             break
             except: pass
             
-            updated_data.append([fname, rank, 1.0])
+            # UPDATED: Added Arch to row
+            updated_data.append([fname, rank, arch, 1.0])
             updated_map[fname] = path
+            
     return updated_data, updated_map, None
 
 def add_workspace_to_merge(selected_model, current_data):
     if not selected_model: return current_data, gr.update()
-    updated_data = current_data.values.tolist() if hasattr(current_data, "values") else (current_data or [])
+    updated_data = current_data.values.tolist() if hasattr(current_data, "values") else (current_data or[])
     from ..context import workspace
+    
     if selected_model not in {row[0] for row in updated_data}:
         m = workspace.get_model(selected_model)
         rank = "?"
+        arch = "Unknown"
         if m:
-            # Access rank via assembly modules
+            arch = m.info.get("arch", "Unknown")
             for mod in m.assembly.modules.values():
                 if mod.down is not None:
                     rank = str(mod.down.shape[0])
                     break
-        updated_data.append([selected_model, rank, 1.0])
+        # UPDATED: Added Arch to row
+        updated_data.append([selected_model, rank, arch, 1.0])
     return updated_data, None
 
 def clear_merge_list(): return [], {}, None
+
 def normalize_weights_ui(data):
-    if data is None: return []
+    if data is None: return[]
     rows = data.values.tolist() if hasattr(data, "values") else data
-    total_abs = sum(abs(float(r[2])) for r in rows)
+    total_abs = sum(abs(float(r[3])) for r in rows) # Index 3 is Ratio
     if total_abs == 0: return data
-    return [[r[0], r[1], round(float(r[2])/total_abs, 4)] for r in rows]
+    return [[r[0], r[1], r[2], round(float(r[3])/total_abs, 4)] for r in rows]
+
 def distribute_weights_ui(data):
-    if data is None: return []
+    if data is None: return[]
     rows = data.values.tolist() if hasattr(data, "values") else data
     count = len(rows)
     if count == 0: return data
     val = round(1.0 / count, 4)
-    return [[r[0], r[1], val] for r in rows]
+    return [[r[0], r[1], r[2], val] for r in rows]
+
 def invert_weights_ui(data):
-    if data is None: return []
+    if data is None: return[]
     rows = data.values.tolist() if hasattr(data, "values") else data
-    return [[r[0], r[1], round(float(r[2]) * -1.0, 4)] for r in rows]
+    return [[r[0], r[1], r[2], round(float(r[3]) * -1.0, 4)] for r in rows]

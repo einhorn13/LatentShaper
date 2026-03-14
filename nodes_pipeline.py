@@ -36,9 +36,8 @@ def get_assembly(lora_input) -> LoRAAssembly:
         # Convert on the fly
         return LoRAAssembly.from_state_dict(lora_input["sd"], lora_input.get("metadata"))
         
-    # Case 3: Raw state dict (unlikely but possible in some workflows)
+    # Case 3: Raw state dict
     if isinstance(lora_input, dict):
-        # Check if it looks like a state dict (has keys)
         return LoRAAssembly.from_state_dict(lora_input)
         
     return LoRAAssembly()
@@ -47,13 +46,20 @@ class LS_Loader:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {"lora_name": (folder_paths.get_filename_list("loras"),)}}
+    
     RETURN_TYPES = ("LS_LORA",)
     RETURN_NAMES = ("ls_lora",)
     FUNCTION = "load"
     CATEGORY = "Latent Shaper/Pipeline"
+
     def load(self, lora_name):
         path = folder_paths.get_full_path("loras", lora_name)
         assembly = load_lora_cached(path)
+        
+        # Detect and log architecture using raw keys
+        spec = ModelRegistry.get_spec(assembly.get_raw_keys())
+        print(f"[Latent Shaper] Loaded '{lora_name}'. Detected Architecture: {spec.name}")
+        
         return ({"assembly": assembly, "name": lora_name},)
 
 class LS_EQ:
@@ -66,14 +72,19 @@ class LS_EQ:
                 "eq_in": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
                 "eq_mid": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
                 "eq_out": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
+                "eq_adapter": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
+                "eq_other": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
             }
         }
+    
     RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "process"
     CATEGORY = "Latent Shaper/Pipeline"
-    def process(self, ls_lora, eq_global, eq_in, eq_mid, eq_out):
+
+    def process(self, ls_lora, eq_global, eq_in, eq_mid, eq_out, eq_adapter, eq_other):
         assembly = get_assembly(ls_lora).clone()
-        spec = ModelRegistry.get_spec(list(assembly.modules.keys()))
+        # Use raw keys for accurate detection
+        spec = ModelRegistry.get_spec(assembly.get_raw_keys())
         
         for name, mod in assembly.modules.items():
             b_idx = spec.get_block_number(name)
@@ -83,6 +94,8 @@ class LS_EQ:
             if region == "IN": m *= eq_in
             elif region == "MID": m *= eq_mid
             elif region == "OUT": m *= eq_out
+            elif region == "ADAPTER": m *= eq_adapter
+            else: m *= eq_other
             
             mod.apply_scale(m)
             
@@ -100,12 +113,14 @@ class LS_Filters:
                 "homeostatic": ("BOOLEAN", {"default": False}),
             }
         }
+    
     RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "process"
     CATEGORY = "Latent Shaper/Pipeline"
+
     def process(self, ls_lora, fft_cutoff, band_stop_start, band_stop_end, homeostatic):
         assembly = get_assembly(ls_lora).clone()
-        spec = ModelRegistry.get_spec(list(assembly.modules.keys()))
+        spec = ModelRegistry.get_spec(assembly.get_raw_keys())
         
         params = {
             "fft_cutoff": fft_cutoff,
@@ -142,9 +157,11 @@ class LS_Dynamics:
                 "clamp": ("FLOAT", {"default": 1.0, "min": 0.8, "max": 1.0, "step": 0.01}),
             }
         }
+    
     RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "process"
     CATEGORY = "Latent Shaper/Pipeline"
+
     def process(self, ls_lora, spectral_threshold, dare_rate, clamp):
         assembly = get_assembly(ls_lora).clone()
         
@@ -157,6 +174,7 @@ class LS_Dynamics:
         }
         
         for mod in assembly.modules.values():
+            # Optimization: if only spectral gate is used, we can work on S directly
             if params["spectral_enabled"] and not params["dare_enabled"] and params["clamp_quantile"] == 1.0:
                 mod.decompose()
                 if mod.s is not None:
@@ -185,12 +203,14 @@ class LS_Eraser:
             },
             "optional": {"clip": ("CLIP",),}
         }
+    
     RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "process"
     CATEGORY = "Latent Shaper/Pipeline"
+
     def process(self, ls_lora, erase_blocks, erase_concepts, clip=None):
         assembly = get_assembly(ls_lora).clone()
-        spec = ModelRegistry.get_spec(list(assembly.modules.keys()))
+        spec = ModelRegistry.get_spec(assembly.get_raw_keys())
         block_set = MathKernel.parse_block_string(erase_blocks)
         
         keys_to_remove = []
@@ -240,9 +260,11 @@ class LS_Metadata:
                 "merge_mode": (["Passthrough", "Replace", "Clear"],),
             }
         }
+    
     RETURN_TYPES = ("LS_LORA",)
     FUNCTION = "edit"
     CATEGORY = "Latent Shaper/Pipeline"
+
     def edit(self, ls_lora, new_name, trigger_words, description, merge_mode):
         assembly = get_assembly(ls_lora).clone()
         meta = assembly.metadata
@@ -260,42 +282,50 @@ class LS_Analyzer:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {"ls_lora": ("LS_LORA",), "mode": (["Basic Stats", "Block Heatmap"],),}}
+    
     RETURN_TYPES = ("IMAGE", "STRING")
     FUNCTION = "analyze"
     CATEGORY = "Latent Shaper/Pipeline"
+    
     def analyze(self, ls_lora, mode):
         assembly = get_assembly(ls_lora)
-        spec = ModelRegistry.get_spec(list(assembly.modules.keys()))
+        spec = ModelRegistry.get_spec(assembly.get_raw_keys())
         
         total_mag = 0.0
         count = 0
-        block_energy = [0.0] * 30
+        
+        # Dynamic block count from architecture spec
+        b_count = spec.block_count if spec.block_count > 0 else 30
+        block_energy = [0.0] * b_count
         
         for name, mod in assembly.modules.items():
-            # Safe access to down weights
             if mod.down is not None:
                 mag = torch.mean(torch.abs(mod.down.float())).item()
                 total_mag += mag
                 count += 1
                 b_idx = spec.get_block_number(name)
-                if 0 <= b_idx < 30: block_energy[b_idx] += mag
+                if 0 <= b_idx < b_count: 
+                    block_energy[b_idx] += mag
             
         avg_mag = total_mag / count if count > 0 else 0
         
         plt.figure(figsize=(10, 4))
         if mode == "Block Heatmap":
-            plt.bar(range(30), block_energy, color='skyblue')
-            plt.title(f"Block Energy ({ls_lora.get('name', 'Unknown')})")
+            plt.bar(range(b_count), block_energy, color='skyblue')
+            plt.title(f"Block Energy ({ls_lora.get('name', 'Unknown')}) - {spec.name}")
+            plt.xlabel("Block Index")
+            plt.ylabel("Magnitude")
         else:
-            plt.text(0.1, 0.5, f"Avg Mag: {avg_mag:.5f}\nModules: {len(assembly.modules)}", fontsize=14)
+            plt.text(0.1, 0.5, f"Arch: {spec.name}\nAvg Mag: {avg_mag:.5f}\nModules: {len(assembly.modules)}", fontsize=14)
             plt.axis('off')
+            
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight')
         plt.close()
         buf.seek(0)
         img = Image.open(buf).convert('RGB')
         img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
-        return (img_tensor.unsqueeze(0), f"Mag: {avg_mag:.6f}")
+        return (img_tensor.unsqueeze(0), f"Mag: {avg_mag:.6f} | Arch: {spec.name}")
 
 class LS_Save:
     @classmethod
@@ -308,13 +338,13 @@ class LS_Save:
                 "save_metadata": ("BOOLEAN", {"default": True}),
             }
         }
+    
     RETURN_TYPES = ("STRING",)
     FUNCTION = "save"
     CATEGORY = "Latent Shaper/Pipeline"
     OUTPUT_NODE = True
+
     def save(self, ls_lora, filename_prefix, precision, save_metadata):
-        # Ensure we have a valid wrapper dict for save_ls_lora
-        # save_ls_lora expects {"assembly": ...}
         wrapper = ls_lora
         if "assembly" not in wrapper:
             wrapper = {"assembly": get_assembly(ls_lora)}
@@ -322,11 +352,15 @@ class LS_Save:
         output_dir = folder_paths.get_output_directory()
         full_output_dir = os.path.dirname(os.path.join(output_dir, filename_prefix))
         base_name = os.path.basename(filename_prefix)
+        
+        os.makedirs(full_output_dir, exist_ok=True)
+        
         counter = 1
         filename = f"{base_name}.safetensors"
         while os.path.exists(os.path.join(full_output_dir, filename)):
             filename = f"{base_name}_{counter:02d}.safetensors"
             counter += 1
+            
         path = os.path.join(full_output_dir, filename)
         save_ls_lora(wrapper, path, precision, save_metadata)
         return (path,)
@@ -342,9 +376,11 @@ class LS_Apply:
                 "strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01}),
             }
         }
+    
     RETURN_TYPES = ("MODEL", "CLIP")
     FUNCTION = "apply"
     CATEGORY = "Latent Shaper/Pipeline"
+
     def apply(self, model, clip, ls_lora, strength):
         assembly = get_assembly(ls_lora)
         return apply_lora_assembly(model, clip, assembly, strength)

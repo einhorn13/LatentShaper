@@ -19,13 +19,6 @@ A powerful interface for surgical LoRA manipulation without loading ComfyUI. Fea
 | **Merge** | Multi-model merging with advanced algorithms: **SVD (Smart Blend)**, **TIES**, **Geometric Median**, and **Orthogonal**. |
 | **Utils** | **Maintenance Tools**. Convert precision (FP32/BF16), Normalize Keys (Kohya-ss format), and Rescale Alpha/Rank. |
 
-## Samples of Merge types (create new LORAs with GUI or use in ComfyUI for multiple use LORAs).
-<img width="384" height="384" alt="1_no_lora" src="https://github.com/user-attachments/assets/8563537e-92a2-40e1-80c1-00d5e920fb3f" />
-<img width="384" height="384" alt="2_merged_lora" src="https://github.com/user-attachments/assets/4df77109-3730-4bc7-abba-d2452837016f" />
-<img width="384" height="384" alt="3_orthogonal_merge" src="https://github.com/user-attachments/assets/f45c95f5-3631-4c5b-b8cb-db8a6b9097b7" />
-<img width="384" height="384" alt="4_ties_merge" src="https://github.com/user-attachments/assets/5adc029e-e4cb-43b2-855b-ad11cb6588a0" />
-
-
 ### How to Launch GUI
 ```bash
 # Inside the app folder
@@ -102,6 +95,19 @@ On the first launch of the GUI, go to the **Settings** tab to configure your `ch
 ## GUI screenshot
 <img width="1892" height="837" alt="image" src="https://github.com/user-attachments/assets/69ec4734-0d14-4ce5-961e-09973e872138" />
 
+## Samples of Merge types (create new LORAs with GUI or use in ComfyUI for multiple use LORAs).
+<img width="384" height="384" alt="1_no_lora" src="https://github.com/user-attachments/assets/8563537e-92a2-40e1-80c1-00d5e920fb3f" />
+<img width="384" height="384" alt="2_merged_lora" src="https://github.com/user-attachments/assets/4df77109-3730-4bc7-abba-d2452837016f" />
+<img width="384" height="384" alt="3_orthogonal_merge" src="https://github.com/user-attachments/assets/f45c95f5-3631-4c5b-b8cb-db8a6b9097b7" />
+<img width="384" height="384" alt="4_ties_merge" src="https://github.com/user-attachments/assets/5adc029e-e4cb-43b2-855b-ad11cb6588a0" />
 
+# History updates
+
+0.02:
+	Plugin Engine - supporting core/architectures	
+	Anima-Preview Support
+	Dynamic UI
+	Robust Key Handling
+	Bugfixes
 
 

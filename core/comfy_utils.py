@@ -1,18 +1,22 @@
 
 import torch
 import os
-import copy
+import threading
 import comfy.utils
 import comfy.sd
 from collections import OrderedDict
 from safetensors.torch import save_file, safe_open
-from typing import Dict, Any, Optional, List, Callable, Tuple
-from .format_handler import FormatHandler
+from typing import Dict, Any, Optional, List, Tuple
 from .math import MathKernel
 from .model_specs import ModelRegistry
-from .structs_assembly import LoRAAssembly, LoRAModule
+from .structs_assembly import LoRAAssembly
 
-# --- DEVICE UTILS ---
+# --- CACHING SYSTEM ---
+_CACHE_LIMIT = 10
+_LORA_CACHE: OrderedDict[str, LoRAAssembly] = OrderedDict()
+_CACHE_LOCK = threading.Lock()
+_CACHE_STATS = {"hits": 0, "misses": 0}
+
 def get_optimal_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
@@ -20,18 +24,20 @@ def get_optimal_device() -> str:
         return "mps"
     return "cpu"
 
-# --- CACHING ---
-_CACHE_LIMIT = 10
-# Cache stores LoRAAssembly now
-_LORA_CACHE: OrderedDict[str, LoRAAssembly] = OrderedDict()
-
 def load_lora_cached(path: str) -> LoRAAssembly:
-    global _LORA_CACHE
-    if path in _LORA_CACHE:
-        _LORA_CACHE.move_to_end(path)
-        # Return a clone to prevent mutation of cached object by nodes
-        return _LORA_CACHE[path].clone()
+    """
+    Thread-safe LoRA loader with caching and statistics.
+    """
+    global _LORA_CACHE, _CACHE_STATS
     
+    with _CACHE_LOCK:
+        if path in _LORA_CACHE:
+            _CACHE_STATS["hits"] += 1
+            _LORA_CACHE.move_to_end(path)
+            return _LORA_CACHE[path].clone()
+        
+        _CACHE_STATS["misses"] += 1
+
     try:
         sd = comfy.utils.load_torch_file(path)
         metadata = {}
@@ -43,22 +49,19 @@ def load_lora_cached(path: str) -> LoRAAssembly:
         
         assembly = LoRAAssembly.from_state_dict(sd, metadata)
         
-        if len(_LORA_CACHE) >= _CACHE_LIMIT:
-            _LORA_CACHE.popitem(last=False)
+        with _CACHE_LOCK:
+            if len(_LORA_CACHE) >= _CACHE_LIMIT:
+                _LORA_CACHE.popitem(last=False)
+            _LORA_CACHE[path] = assembly
+            return assembly.clone()
             
-        _LORA_CACHE[path] = assembly
-        return assembly.clone()
     except Exception as e:
         print(f"[Latent Shaper] Error loading {path}: {e}")
         return LoRAAssembly()
 
 def save_ls_lora(ls_lora: Dict, path: str, precision: str = "FP16", save_meta: bool = True) -> str:
-    """
-    Saves LS_LORA (which wraps LoRAAssembly) to disk.
-    """
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        
         assembly: LoRAAssembly = ls_lora.get("assembly")
         if not assembly:
             raise ValueError("No assembly found in LS_LORA")
@@ -71,7 +74,8 @@ def save_ls_lora(ls_lora: Dict, path: str, precision: str = "FP16", save_meta: b
         
         save_dict = {}
         for k, v in sd.items():
-            save_dict[k] = v.to(device="cpu", dtype=target_dtype).contiguous()
+            # Ensure dedicated storage to prevent file bloat
+            save_dict[k] = v.to(device="cpu", dtype=target_dtype).detach().clone().contiguous()
         
         save_file(save_dict, path, metadata=meta)
         return path
@@ -79,41 +83,20 @@ def save_ls_lora(ls_lora: Dict, path: str, precision: str = "FP16", save_meta: b
         print(f"[Latent Shaper] Save failed: {e}")
         raise e
 
-# --- MATRIX OPS ---
-
 def apply_lora_assembly(model, clip, assembly: LoRAAssembly, strength: float):
-    """
-    Applies LoRAAssembly to ComfyUI Model/CLIP.
-    Requires converting back to state_dict temporarily.
-    """
     if not assembly.modules: return (model, clip)
-    
-    # Convert to flat dict for ComfyUI's loader
     lora_dict = assembly.to_state_dict()
-    
-    print(f"[Latent Shaper] Patching model with {len(lora_dict)} keys (Strength: {strength})...")
     new_model, new_clip = comfy.sd.load_lora_for_models(
         model, clip, lora_dict, strength_model=strength, strength_clip=strength
     )
     return (new_model, new_clip)
 
 def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: int, global_strength: float) -> Dict[str, torch.Tensor]:
-    # Legacy merge support or refactor for Assembly?
-    # For now, let's keep the logic but adapt it to use Assemblies if passed.
-    # NOTE: This function was heavily dependent on raw dicts. 
-    # Since LS_Merger now receives LS_LORA (Assembly), we should rewrite it.
-    
     print(f"[Latent Shaper] Merging {len(active_loras)} LoRAs via {algorithm}...")
-    
-    # Collect all unique block names
     all_block_names = set()
-    
-    # Pre-load assemblies
     for item in active_loras:
         if "assembly" not in item:
-            # Fallback for legacy dicts (should not happen with new nodes)
             item["assembly"] = LoRAAssembly.from_state_dict(item.get("sd", {}))
-        
         for name in item["assembly"].modules.keys():
             all_block_names.add(name)
 
@@ -125,19 +108,13 @@ def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: in
         ratios = []
         ref_shape = None
         
-        # Find reference shape
         for item in active_loras:
             mod = item["assembly"].modules.get(block_name)
             if mod:
-                # Reconstruct matrix on CPU/Device
-                # We need full matrix for merging usually
                 if mod.is_decomposed: mod.compose()
                 mat = (mod.up.float() @ mod.down.float())
-                
-                # Apply alpha scaling
                 scale = mod.alpha / mod.rank if mod.rank > 0 else 1.0
                 mat *= scale
-                
                 ref_shape = mat.shape
                 del mat
                 break
@@ -147,7 +124,6 @@ def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: in
         for item in active_loras:
             mod = item["assembly"].modules.get(block_name)
             ratio = item["ratio"]
-            
             if not mod:
                 mat = torch.zeros(ref_shape, device=device, dtype=torch.float32)
             else:
@@ -155,19 +131,15 @@ def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: in
                 mat = (mod.up.to(device).float() @ mod.down.to(device).float())
                 scale = mod.alpha / mod.rank if mod.rank > 0 else 1.0
                 mat *= scale
-                
                 if mat.shape != ref_shape:
                      mat = torch.zeros(ref_shape, device=device, dtype=torch.float32)
-            
             deltas.append(mat)
             ratios.append(ratio)
 
         final_delta = None
-        
         if algorithm.startswith("Median"):
             weighted_deltas = [d * r for d, r in zip(deltas, ratios)]
             final_delta = MathKernel.median_merge(weighted_deltas)
-            
         elif algorithm.startswith("SLERP"):
             if len(deltas) == 1: final_delta = deltas[0] * ratios[0]
             else:
@@ -188,26 +160,19 @@ def process_merge_dict(active_loras: List[Dict], algorithm: str, target_rank: in
                 final_delta.add_(d, alpha=r)
 
         if global_strength != 1.0: final_delta *= global_strength
-
         final_target_rank = target_rank if target_rank > 0 else 64
-        
         final_delta = torch.nan_to_num(final_delta.float())
         new_down, new_up, new_rank = MathKernel.svd_decomposition(final_delta, final_target_rank)
 
-        # Create new module
         new_mod = LoRAModule(
             new_down.to("cpu", dtype=torch.float16),
             new_up.to("cpu", dtype=torch.float16),
             float(new_rank)
         )
         merged_assembly.modules[block_name] = new_mod
-        
-        # Copy key mapping from first source that has this block
         for item in active_loras:
             if block_name in item["assembly"].key_map:
                 merged_assembly.key_map[block_name] = item["assembly"].key_map[block_name]
                 break
-
-        del deltas, final_delta, new_down, new_up
 
     return merged_assembly.to_state_dict()

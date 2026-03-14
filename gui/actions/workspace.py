@@ -1,4 +1,3 @@
-# gui/actions/workspace.py
 
 import gradio as gr
 import os
@@ -7,34 +6,38 @@ from ..context import workspace, config
 from .common import validate_and_fix_filename
 
 def refresh_workspace_ui():
-    models = []
+    models =[]
     for name in workspace.list_models():
         m = workspace.get_model(name)
         rank = m.info.get("rank", "?")
+        arch = m.info.get("arch", "Unknown")
+        
+        # Компактное отображение архитектуры для экономии места в таблице
+        if "FLUX" in arch: short_arch = "FLUX"
+        elif "S3-DiT" in arch: short_arch = "S3-DiT"
+        elif "WAN" in arch: short_arch = "WAN"
+        elif "LTX" in arch: short_arch = "LTX"
+        elif "SDXL" in arch: short_arch = "SDXL"
+        else: short_arch = arch[:8] + ".." if len(arch) > 10 else arch
+            
         size = ResourceMonitor.format_bytes(m.size_bytes)
-        models.append([name, rank, size])
+        models.append([name, rank, short_arch, size])
     return models
 
 def load_files_to_workspace(files):
     if not files: return gr.update(), None
     if isinstance(files, str): files = [files]
-    
-    paths = []
+    paths =[]
     for f in files:
         if isinstance(f, str): paths.append(f)
         elif hasattr(f, 'name'): paths.append(f.name)
     
     for f in paths:
-        try:
-            workspace.load_from_disk(f)
-        except Exception as e:
-            print(f"Error loading {f}: {e}")
-            gr.Warning(f"Failed to load {os.path.basename(f)}: {e}")
-    
+        try: workspace.load_from_disk(f)
+        except Exception as e: gr.Warning(f"Failed to load {os.path.basename(f)}: {e}")
     return refresh_workspace_ui(), None
 
 def load_from_server_path(path):
-    """Loads a model directly from a server path (Disk Dropdown)."""
     if not path: return gr.update()
     try:
         workspace.load_from_disk(path)
@@ -44,23 +47,16 @@ def load_from_server_path(path):
     return refresh_workspace_ui()
 
 def save_workspace_model(name):
-    if not name or not workspace.exists(name):
-        return gr.Warning("Select a model first.")
-    
+    if not name or not workspace.exists(name): return gr.Warning("Select a model first.")
     try:
         base_name = name
-        if base_name.lower().endswith(".safetensors"):
-            base_name = base_name[:-12]
-            
+        if base_name.lower().endswith(".safetensors"): base_name = base_name[:-12]
         final_name = validate_and_fix_filename(base_name, is_workspace=False)
         path = os.path.join(config.output_dir, final_name)
-        
         workspace.save_to_disk(name, path)
         gr.Info(f"Saved to {path}")
-    except ValueError as ve:
-        gr.Warning(str(ve))
-    except Exception as e:
-        gr.Error(f"Save failed: {e}")
+    except ValueError as ve: gr.Warning(str(ve))
+    except Exception as e: gr.Error(f"Save failed: {e}")
 
 def delete_workspace_model(name):
     if not name: return gr.update()
@@ -68,10 +64,6 @@ def delete_workspace_model(name):
     return refresh_workspace_ui()
 
 def handle_sidebar_select(evt: gr.SelectData):
-    """
-    Handles sidebar selection to auto-fill all main tabs.
-    Returns 16 outputs to sync UI state.
-    """
     row_idx = evt.index[0]
     all_models = workspace.list_models()
     
@@ -79,10 +71,12 @@ def handle_sidebar_select(evt: gr.SelectData):
     if 0 <= row_idx < len(all_models):
         selected_name = all_models[row_idx]
     
-    # Default empty update
     if not selected_name:
-        # 5 tabs with (drop, upload) + 2 single drops + 4 output names
-        return [gr.update(), None] * 5 + [gr.update(), gr.update()] + [gr.update()] * 4
+        return (
+            [gr.update(), None] * 5 + [gr.update(), gr.update()] + 
+            [gr.update()] * 4 + ["⚪ **Architecture:** None Selected"] + 
+            [gr.update(visible=True)] * 3 + [gr.update(visible=False)] * 2
+        )
 
     base_clean = selected_name
     if base_clean.lower().endswith(".safetensors"):
@@ -93,27 +87,41 @@ def handle_sidebar_select(evt: gr.SelectData):
     name_morphed = f"{base_clean}_morphed"
     name_utils = f"{base_clean}_opt"
 
-    return [
-        # 1. Analyze
+    model = workspace.get_model(selected_name)
+    if model:
+        from core.model_specs import ModelRegistry
+        from core.architectures.base import UnknownArchitecture
+        spec = ModelRegistry.get_spec(list(model.assembly.modules.keys()))
+        
+        if isinstance(spec, UnknownArchitecture):
+            arch_text = f"🔴 **Architecture:** {spec.name} (Unsupported)"
+        else:
+            arch_text = f"🟢 **Architecture:** {spec.name}"
+        regions = spec.get_regions()
+    else:
+        arch_text = "⚪ **Architecture:** Unknown"
+        regions = ["IN", "MID", "OUT"]
+
+    return[
         gr.update(value=selected_name), None,
-        # 2. Extract Base
         gr.update(value=selected_name), None,
-        # 3. Resize
         gr.update(value=[selected_name]), None,
-        # 4. Morph
         gr.update(value=[selected_name]), None,
-        # 5. Utils (NEW)
         gr.update(value=[selected_name]), None,
-        # 6. Merge
         gr.update(value=selected_name),
-        # 7. Metadata
         gr.update(value=selected_name),
         
-        # Output Names
         gr.update(value=name_extracted),
         gr.update(value=name_resized),
         gr.update(value=name_morphed),
-        gr.update(value=name_utils) # (NEW)
+        gr.update(value=name_utils),
+        
+        arch_text,
+        gr.update(visible="IN" in regions),
+        gr.update(visible="MID" in regions),
+        gr.update(visible="OUT" in regions),
+        gr.update(visible="ADAPTER" in regions),
+        gr.update(visible="OTHER" in regions)
     ]
 
 def load_settings(): return config.get("output_dir", "output")

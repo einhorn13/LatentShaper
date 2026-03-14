@@ -1,97 +1,59 @@
-# core/model_specs.py
 
-import re
-from abc import ABC, abstractmethod
-from enum import Enum, auto
+import os
+import sys
+import importlib.util
+import inspect
 from typing import List
-
-class ModuleType(Enum):
-    TRANSFORMER = auto()
-    TEXT_ENCODER = auto()
-    VAE = auto()
-    OTHER = auto()
-
-class ModelSpec(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str: pass
-    @property
-    @abstractmethod
-    def block_count(self) -> int: pass
-    @abstractmethod
-    def detect(self, keys: List[str]) -> bool: pass
-    @abstractmethod
-    def get_block_number(self, key: str) -> int: pass
-    @abstractmethod
-    def get_component_idx(self, key: str) -> int: pass
-    @abstractmethod
-    def get_region(self, block_idx: int) -> str: pass
-    @abstractmethod
-    def is_lora_target(self, key: str) -> bool: pass
-
-class S3DiTSpec(ModelSpec):
-    """
-    Specification for S3-DiT Architecture (Z-Image Turbo, etc.)
-    """
-    name = "S3-DiT (Z-Image Turbo)"
-    block_count = 30
-    
-    _BLOCK_PATTERN = re.compile(r"(?:blocks|layers|input_blocks|output_blocks|middle_block)[\._]?(\d+)")
-    
-    _COMPONENT_MAP = {
-        "attn.q_proj": 0, "to_q": 0, "q_proj": 0,
-        "attn.k_proj": 1, "to_k": 1, "k_proj": 1,
-        "attn.v_proj": 2, "to_v": 2, "v_proj": 2,
-        "attn.o_proj": 3, "to_out.0": 3, "out_proj": 3,
-        "attn.qkv": 0, "qkv_proj": 0,
-        "mlp.gate_proj": 4, "gate_proj": 4,
-        "mlp.up_proj": 5, "up_proj": 5,
-        "mlp.down_proj": 6, "down_proj": 6,
-        "ff.net": 4, "linear": 4
-    }
-
-    def detect(self, keys: List[str]) -> bool:
-        k_str = "".join(keys).lower()
-        is_dit = "transformer" in k_str or "diffusion_model" in k_str
-        is_not_unet = "input_blocks" not in k_str or "double_blocks" in k_str
-        return is_dit and is_not_unet
-
-    def get_block_number(self, key: str) -> int:
-        match = self._BLOCK_PATTERN.search(key)
-        if match:
-            return int(match.group(1))
-        return -1
-
-    def get_component_idx(self, key: str) -> int:
-        for k, v in self._COMPONENT_MAP.items():
-            if k in key: return v
-        return -1
-
-    def get_region(self, block_idx: int) -> str:
-        if block_idx == -1: return "OTHER"
-        if block_idx < 10: return "IN"
-        if block_idx < 20: return "MID"
-        if block_idx < 30: return "OUT"
-        return "OTHER"
-
-    def is_lora_target(self, key: str) -> bool:
-        if not key.endswith(".weight"): return False
-        return any(k in key for k in self._COMPONENT_MAP.keys())
-
-class UnknownSpec(ModelSpec):
-    name = "Unknown Architecture"
-    block_count = 0
-    def detect(self, keys): return True
-    def get_block_number(self, key): return -1
-    def get_component_idx(self, key): return -1
-    def get_region(self, block_idx): return "OTHER"
-    def is_lora_target(self, key): return key.endswith(".weight")
+from core.architectures.base import BaseArchitecture, UnknownArchitecture
+from core.logger import Logger
 
 class ModelRegistry:
-    @staticmethod
-    def get_spec(keys: List[str]) -> ModelSpec:
-        # Future: Add FluxSpec, SDXLSpec here
-        for spec_cls in [S3DiTSpec]:
-            spec = spec_cls()
+    _architectures: List[BaseArchitecture] = []
+    _initialized = False
+
+    @classmethod
+    def _initialize(cls):
+        if cls._initialized: return
+        cls._architectures = []
+        
+        # Устанавливаем корень проекта в sys.path
+        core_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(core_dir)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+            
+        arch_dir = os.path.join(core_dir, "architectures")
+        
+        for filename in os.listdir(arch_dir):
+            if filename.endswith(".py") and filename != "base.py" and not filename.startswith("__"):
+                file_path = os.path.join(arch_dir, filename)
+                module_name = f"core.architectures.{filename[:-3]}"
+                try:
+                    spec = importlib.util.spec_from_file_location(module_name, file_path)
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    for name, obj in inspect.getmembers(module, inspect.isclass):
+                        if issubclass(obj, BaseArchitecture) and obj not in [BaseArchitecture, UnknownArchitecture]:
+                            instance = obj()
+                            cls._architectures.append(instance)
+                            Logger.info(f"Loaded architecture plugin: {instance.name}")
+                except Exception as e:
+                    Logger.error(f"Failed to load plugin {filename}: {e}")
+        cls._initialized = True
+
+    @classmethod
+    def get_spec(cls, keys: List[str]) -> BaseArchitecture:
+        cls._initialize()
+        if not keys: return UnknownArchitecture()
+        
+        logs = {}
+        for spec in cls._architectures:
             if spec.detect(keys): return spec
-        return UnknownSpec()
+            logs[spec.name] = spec.diagnose(keys)
+        
+        Logger.error("--- MODEL DETECTION FAILED ---")
+        for arch, issues in logs.items():
+            Logger.error(f"  > [{arch}]: {', '.join(issues)}")
+        return UnknownArchitecture()
+
+ModelSpec = BaseArchitecture

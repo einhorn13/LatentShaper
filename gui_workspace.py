@@ -1,4 +1,3 @@
-# gui_workspace.py
 
 import gradio as gr
 from gui import actions
@@ -6,75 +5,87 @@ from core.workspace import WorkspaceManager
 from core.config import ConfigManager
 from core.io_manager import SafeStreamer
 
+# Инициализация синглтонов
 workspace = WorkspaceManager()
 config = ConfigManager()
 
 def create_sidebar():
+    """
+    Создает левую панель управления: Ресурсы, Workspace (RAM) и Активные задачи.
+    """
     with gr.Column(elem_id="sidebar_col"):
-        # --- 1. RESOURCE MONITOR ---
+        
+        # --- БЛОК 1: МОНИТОРИНГ РЕСУРСОВ ---
         with gr.Group():
             gr.Markdown("### 🖥️ Resources")
             resource_html = gr.HTML(value=actions.format_resource_html())
+            
+            # Таймер обновления ресурсов (каждые 2 секунды)
             res_timer = gr.Timer(2.0)
             res_timer.tick(actions.update_resources, outputs=[resource_html])
 
-        # --- 2. WORKSPACE MANAGER ---
+        # --- БЛОК 2: WORKSPACE (RAM) ---
         with gr.Group():
             gr.Markdown("### 🧠 Workspace (RAM)")
+            
+            # Динамический индикатор архитектуры выбранной модели
+            arch_indicator = gr.Markdown("⚪ **Architecture:** None Selected")
             
             with gr.Tabs():
                 with gr.Tab("Upload"):
                     file_uploader = gr.File(
-                        label="Drop File",
-                        file_count="multiple",
+                        label="Drop File", 
+                        file_count="multiple", 
                         file_types=[".safetensors"],
-                        type="filepath",
-                        height=80,
-                        min_width=50
+                        type="filepath", 
+                        height=100
                     )
                 with gr.Tab("Server"):
-                    # Scan loras dir for quick load
+                    # Сканирование директории лор, указанной в конфиге
                     server_files = SafeStreamer.scan_directory(config.loras_dir)
                     server_drop = gr.Dropdown(
                         label="Load from Disk", 
                         choices=server_files, 
                         allow_custom_value=True
                     )
-                    server_load_btn = gr.Button("Load to RAM", size="sm")
+                    server_load_btn = gr.Button("🚀 Load to RAM", size="sm", variant="secondary")
 
-            # Model List
+            # Основная таблица моделей в памяти
             workspace_list = gr.Dataframe(
-                headers=["Name", "Rank", "Size"],
-                datatype=["str", "number", "str"],
-                column_count=(3, "fixed"),
+                headers=["Name", "Rank", "Arch", "Size"], 
+                datatype=["str", "number", "str", "str"],
+                column_count=(4, "fixed"), 
                 interactive=False, 
-                label="Loaded Models"
+                label="Loaded Models",
+                elem_id="workspace_table",
+                wrap=True
             )
             
-            # Actions Toolbar
             with gr.Row():
                 refresh_btn = gr.Button("🔄 Refresh", size="sm")
                 save_btn = gr.Button("💾 Save", size="sm")
                 del_btn = gr.Button("🗑️ Del", size="sm")
 
+            # Скрытое состояние для хранения имени выбранной модели
             selected_model_name = gr.State("")
 
-            # --- EVENTS ---
-            
+            # Логика загрузки и управления списком
             file_uploader.upload(
                 actions.load_files_to_workspace, 
                 inputs=[file_uploader], 
                 outputs=[workspace_list, file_uploader]
             )
-            
             server_load_btn.click(
-                actions.load_from_server_path,
-                inputs=[server_drop],
+                actions.load_from_server_path, 
+                inputs=[server_drop], 
                 outputs=[workspace_list]
             )
-
-            refresh_btn.click(actions.refresh_workspace_ui, outputs=[workspace_list])
+            refresh_btn.click(
+                actions.refresh_workspace_ui, 
+                outputs=[workspace_list]
+            )
             
+            # Обработка выбора строки в таблице
             def on_select_internal(evt: gr.SelectData):
                 row_idx = evt.index[0]
                 all_models = workspace.list_models()
@@ -83,17 +94,50 @@ def create_sidebar():
                 return ""
                 
             workspace_list.select(on_select_internal, outputs=[selected_model_name])
+            
+            save_btn.click(
+                actions.save_workspace_model, 
+                inputs=[selected_model_name], 
+                outputs=[]
+            )
+            del_btn.click(
+                actions.delete_workspace_model, 
+                inputs=[selected_model_name], 
+                outputs=[workspace_list]
+            )
 
-            save_btn.click(actions.save_workspace_model, inputs=[selected_model_name], outputs=[])
-            del_btn.click(actions.delete_workspace_model, inputs=[selected_model_name], outputs=[workspace_list])
-
-        # --- 3. MINI QUEUE ---
+        # --- БЛОК 3: УПРАВЛЕНИЕ ТЕКУЩЕЙ ЗАДАЧЕЙ ---
         with gr.Group():
             gr.Markdown("### ⏳ Active Task")
-            mini_status = gr.Label(value="Idle", show_label=False)
-            mini_progress = gr.HTML()
             
-            q_timer = gr.Timer(1.0)
-            q_timer.tick(actions.update_mini_queue, outputs=[mini_status, mini_progress])
+            # Состояние для ID текущей задачи (нужно для отмены)
+            active_job_id = gr.State("")
+            
+            # HTML контейнер для прогресса и описания задачи
+            mini_progress_html = gr.HTML(
+                "<div style='color:#888;font-size:11px;'>Queue idle</div>"
+            )
+            
+            # Кнопка немедленной остановки (видима только во время выполнения)
+            btn_abort = gr.Button(
+                "🛑 Stop Current", 
+                size="sm", 
+                variant="stop", 
+                visible=False
+            )
+            
+            # Таймер мониторинга очереди (каждые 1.5 сек)
+            q_timer = gr.Timer(1.5)
+            q_timer.tick(
+                actions.update_mini_queue, 
+                outputs=[mini_progress_html, btn_abort, active_job_id]
+            )
+            
+            # Экстренная отмена задачи по её ID
+            btn_abort.click(
+                actions.cancel_task, 
+                inputs=[active_job_id], 
+                outputs=[]
+            )
 
-    return workspace_list
+    return workspace_list, arch_indicator

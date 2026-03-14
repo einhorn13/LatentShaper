@@ -1,4 +1,3 @@
-# gui/tabs/morph.py
 
 import gradio as gr
 from gui.actions import toggle_output_input, submit_morph, reset_morph_ui
@@ -22,6 +21,8 @@ def create_morph_tab():
                     eq_in = gr.Slider(0.0, 2.0, 1.0, label="IN (Structure)")
                     eq_mid = gr.Slider(0.0, 2.0, 1.0, label="MID (Concepts)")
                     eq_out = gr.Slider(0.0, 2.0, 1.0, label="OUT (Style)")
+                    eq_adapter = gr.Slider(0.0, 2.0, 1.0, label="ADAPTER (LLM)", visible=False)
+                    eq_other = gr.Slider(0.0, 2.0, 1.0, label="OTHER", visible=False)
 
             with gr.Tab("Advanced Filters"):
                 with gr.Row():
@@ -83,7 +84,7 @@ def create_morph_tab():
             t.change(_update_name, [sel["ws"], sel["disk"], sel["upload"]], mo_out)
         
         mo_ui_list = [
-            eq_global, eq_in, eq_mid, eq_out, eq_interpolate, 
+            eq_global, eq_in, eq_mid, eq_out, eq_adapter, eq_other, eq_interpolate, 
             temp, fft, clamp, fix_alpha, 
             filter_chk, filter_thr, filter_inv, filter_adaptive, 
             dare_chk, dare_rate, eraser_start, eraser_end,
@@ -97,7 +98,7 @@ def create_morph_tab():
             submit_morph, 
             [
                 sel["ws"], sel["disk"], sel["upload"], mo_out, 
-                eq_global, eq_in, eq_mid, eq_out, eq_interpolate,
+                eq_global, eq_in, eq_mid, eq_out, eq_adapter, eq_other, eq_interpolate,
                 temp, fft, clamp, fix_alpha,
                 filter_chk, filter_thr, filter_inv, filter_adaptive, 
                 dare_chk, dare_rate, 
@@ -113,6 +114,7 @@ def create_morph_tab():
     return {
         "ws": sel["ws"], "disk": sel["disk"], "upload": sel["upload"], "out_name": mo_out, 
         "eq_global": eq_global, "eq_in": eq_in, "eq_mid": eq_mid, "eq_out": eq_out, 
+        "eq_adapter": eq_adapter, "eq_other": eq_other,
         "eq_interpolate": eq_interpolate, "temp": temp, "fft": fft, "clamp": clamp, 
         "fix_alpha": fix_alpha, "filter_chk": filter_chk, "filter_thr": filter_thr, 
         "filter_inv": filter_inv, "filter_adaptive": filter_adaptive,

@@ -18,12 +18,10 @@ class VirtualModel:
     @property
     def size_bytes(self) -> int:
         total = 0
-        # Estimate size from modules
         for mod in self.assembly.modules.values():
             if mod.down is not None: total += mod.down.numel() * mod.down.element_size()
             if mod.up is not None: total += mod.up.numel() * mod.up.element_size()
             if mod.s is not None: total += mod.s.numel() * mod.s.element_size()
-            # U and Vh are usually transient or replace Down/Up, but count if exist
             if mod.u is not None: total += mod.u.numel() * mod.u.element_size()
             if mod.vh is not None: total += mod.vh.numel() * mod.vh.element_size()
             
@@ -55,9 +53,6 @@ class WorkspaceManager:
             return name in self._models
 
     def add_model(self, name: str, tensors: Dict[str, torch.Tensor], metadata: Dict[str, str] = None, info: Dict[str, Any] = None):
-        """
-        Accepts either a raw state_dict (legacy) or creates an Assembly.
-        """
         with self._lock:
             final_name = name
             counter = 1
@@ -65,19 +60,32 @@ class WorkspaceManager:
                 final_name = f"{name}_{counter}"
                 counter += 1
             
-            # Convert to Assembly immediately
+            info = info or {}
             assembly = LoRAAssembly.from_state_dict(tensors, metadata)
+            
+            if "arch" not in info:
+                from .model_specs import ModelRegistry
+                spec = ModelRegistry.get_spec(assembly.get_raw_keys())
+                info["arch"] = spec.name
+
+            # СТАТИСТИЧЕСКОЕ ОПРЕДЕЛЕНИЕ РАНГА (100% надежность)
+            if info.get("rank", 0) == 0 and assembly.modules:
+                ranks =[m.rank for m in assembly.modules.values() if m.rank > 0]
+                if ranks:
+                    # Находим моду (самый частый ранг)
+                    info["rank"] = max(set(ranks), key=ranks.count)
+                else:
+                    info["rank"] = 0
             
             self._models[final_name] = VirtualModel(
                 name=final_name,
                 assembly=assembly,
-                info=info or {}
+                info=info
             )
-            Logger.info(f"Workspace: Added '{final_name}'")
+            Logger.info(f"Workspace: Added '{final_name}' (Arch: {info['arch']}, Rank: {info.get('rank', 0)})")
             return final_name
 
     def add_assembly(self, name: str, assembly: LoRAAssembly, info: Dict[str, Any] = None):
-        """Directly adds an assembly object."""
         with self._lock:
             final_name = name
             counter = 1
@@ -85,12 +93,25 @@ class WorkspaceManager:
                 final_name = f"{name}_{counter}"
                 counter += 1
             
+            info = info or {}
+            if "arch" not in info:
+                from .model_specs import ModelRegistry
+                spec = ModelRegistry.get_spec(assembly.get_raw_keys())
+                info["arch"] = spec.name
+
+            if info.get("rank", 0) == 0 and assembly.modules:
+                ranks = [m.rank for m in assembly.modules.values() if m.rank > 0]
+                if ranks:
+                    info["rank"] = max(set(ranks), key=ranks.count)
+                else:
+                    info["rank"] = 0
+
             self._models[final_name] = VirtualModel(
                 name=final_name,
                 assembly=assembly,
-                info=info or {}
+                info=info
             )
-            Logger.info(f"Workspace: Added '{final_name}' (Assembly)")
+            Logger.info(f"Workspace: Added '{final_name}' (Assembly - Arch: {info['arch']})")
             return final_name
 
     def load_from_disk(self, path: str, alias: str = None) -> str:
@@ -104,30 +125,20 @@ class WorkspaceManager:
         if not tensors:
             raise ValueError(f"File '{name}' is empty.")
             
-        # Quick rank check
-        rank = 0
-        for k in tensors.keys():
-            if "lora_down" in k:
-                rank = tensors[k].shape[0]
-                break
-        
-        info = {"source_path": path, "rank": rank}
+        # Ранг и архитектура будут автоматически определены в add_model
+        info = {"source_path": path, "rank": 0}
         return self.add_model(name, tensors, io.metadata, info)
 
     def save_to_disk(self, name: str, path: str):
-        """Saves a workspace model to disk."""
         with self._lock:
             model = self._models.get(name)
             if not model:
                 raise ValueError(f"Model '{name}' not found in workspace.")
             
             try:
-                # Convert Assembly back to Dict
                 tensors = model.assembly.to_state_dict()
                 SafeStreamer.save_tensors(tensors, path, model.assembly.metadata)
                 Logger.info(f"Workspace: Saved '{name}' to '{path}'")
-                
-                # Cleanup temporary dict
                 del tensors
                 gc.collect()
             except Exception as e:

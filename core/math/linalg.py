@@ -1,90 +1,99 @@
 
 import torch
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Tuple, Optional
+from ..logger import Logger
 
 class MathLinalg:
-    """Linear Algebra operations: SVD, QR, Spectrum, Projections."""
+    """
+    Linear Algebra operations: SVD, QR, Spectrum.
+    Enhanced for numerical stability and cross-device compatibility.
+    """
 
     @staticmethod
     def get_spectrum_fast(ld: torch.Tensor, lu: torch.Tensor, scale: float = 1.0) -> Tuple[torch.Tensor, float]:
         """
         Computes Singular Values via QR decomposition.
-        Optimized for memory and precision.
+        Fixed: Explicitly casts to Float32 to avoid "geqrf_cuda" not implemented for BFloat16.
         """
-        # Keep input precision as long as possible.
-        # nan_to_num supports BF16/FP16 in newer PyTorch versions.
-        # We cast to float ONLY for the QR operation if on CPU.
+        # 1. Защита от NaN и приведение к Float32 (обязательно для linalg на CUDA)
+        ld_safe = torch.nan_to_num(ld.float(), nan=0.0)
+        lu_safe = torch.nan_to_num(lu.float(), nan=0.0)
         
-        # Check for NaN in original precision to avoid propagation
-        ld_safe = torch.nan_to_num(ld)
-        lu_safe = torch.nan_to_num(lu)
-        
-        # Helper to extract R from QR result
         def get_R(res):
-            if isinstance(res, (tuple, list)) and len(res) >= 2:
-                return res[1]
-            if hasattr(res, 'R'):
-                return res.R
+            if isinstance(res, (tuple, list)) and len(res) >= 2: return res[1]
+            if hasattr(res, 'R'): return res.R
             return res
 
         try:
-            # QR Decomposition
-            # CPU usually requires Float32 for QR. GPU might support Half.
-            # We defer .float() until here.
-            dtype_for_qr = torch.float32 
+            # Выполняем QR разложение. Результат всегда в Float32.
+            # Даже если входные тензоры на CUDA, QR требует Float32/Float64.
             
-            res_u = torch.linalg.qr(lu_safe.to(dtype=dtype_for_qr), mode='r')
+            # Разложение матрицы Up (Out_dim x Rank)
+            res_u = torch.linalg.qr(lu_safe, mode='r')
             R_u = get_R(res_u)
             
-            res_d = torch.linalg.qr(ld_safe.mT.to(dtype=dtype_for_qr), mode='r')
+            # Разложение матрицы Down (Rank x In_dim) -> подаем транспонированной
+            res_d = torch.linalg.qr(ld_safe.mT, mode='r')
             R_d = get_R(res_d)
             
-            # Core matrix: Rank x Rank (Small!)
+            # Матрица ядра (Core): Rank x Rank (очень маленькая)
             core = R_u @ R_d.mT
             
             if scale != 1.0:
                 core.mul_(scale)
                 
-            # SVD on small core matrix
+            # SVD вычисляется на маленькой квадратной матрице ядра
             S = torch.linalg.svdvals(core)
             energy = torch.sqrt(torch.sum(S**2))
             
-            return S.cpu(), energy.item() # Return CPU tensor to free VRAM/Thread memory
+            return S.detach().cpu(), energy.item()
             
-        except Exception:
-            # Fallback for degenerate matrices
+        except Exception as e:
+            Logger.error(f"Fast Spectrum failed: {e}")
+            # Возвращаем заглушку, чтобы не прерывать пайплайн анализа
             return torch.zeros(1), 0.0
 
     @staticmethod
-    def svd_decomposition(delta_w, rank, auto_rank_threshold=0.0, clamp_threshold=1e-6):
+    def svd_decomposition(delta_w: torch.Tensor, rank: int, auto_rank_threshold: float = 0.0, clamp_threshold: float = 1e-6):
+        """
+        Decomposes weight matrix into LoRA Down/Up.
+        Uses fallback drivers and logic for numerical stability.
+        """
         orig_dtype = delta_w.dtype
-        # CRITICAL: Ensure no NaNs or Infs enter SVD
-        # Cast to float32 for stability of SVD
+        # Всегда вычисляем SVD в Float32 для стабильности
         d_float = torch.nan_to_num(delta_w.float(), nan=0.0, posinf=0.0, neginf=0.0)
         
-        # Hard clamp to remove noise floor before SVD
         if clamp_threshold > 0:
             mask = torch.abs(d_float) >= clamp_threshold
             d_float = d_float * mask
         
-        min_dim = min(d_float.shape)
-        request_q = min(256 if auto_rank_threshold > 0 else rank + 16, min_dim)
+        rows, cols = d_float.shape
+        min_dim = min(rows, cols)
+        
+        # Решаем, какой драйвер использовать
+        use_lowrank = min_dim > 512 and rank < (min_dim // 2)
         
         try:
-            # Lowrank SVD is faster but can fail on edge cases
-            U, S, V = torch.svd_lowrank(d_float, q=request_q, niter=4)
-        except Exception:
+            if use_lowrank:
+                q = min(rank + 32, min_dim)
+                U, S, V = torch.svd_lowrank(d_float, q=q, niter=4)
+            else:
+                # На CPU 'gesvd' стабильнее, на CUDA используется дефолтный драйвер
+                driver = 'gesvd' if d_float.device.type == 'cpu' else None
+                U, S, Vh = torch.linalg.svd(d_float, full_matrices=False, driver=driver)
+                V = Vh.mT
+        except Exception as e:
+            Logger.warning(f"SVD Primary Driver failed: {e}. Falling back to default.")
             try:
-                # Fallback to full SVD (slower but more robust)
-                U, S, V = torch.linalg.svd(d_float, full_matrices=False)
-            except Exception as e:
-                print(f"SVD Failed: {e}")
-                # Emergency fallback: return zeros
-                return (torch.zeros((rank, d_float.shape[1]), dtype=orig_dtype), 
-                        torch.zeros((d_float.shape[0], rank), dtype=orig_dtype), 
-                        0)
+                U, S, Vh = torch.linalg.svd(d_float, full_matrices=False)
+                V = Vh.mT
+            except Exception as final_e:
+                Logger.error(f"Critical SVD Failure: {final_e}")
+                return (torch.zeros((rank, cols), dtype=orig_dtype), 
+                        torch.zeros((rows, rank), dtype=orig_dtype), 0)
         
+        # Логика выбора эффективного ранга
         final_rank = rank
         if auto_rank_threshold > 0:
             total_energy = torch.sum(S)
@@ -93,56 +102,34 @@ class MathLinalg:
                 mask = cumulative >= (auto_rank_threshold * total_energy)
                 if mask.any():
                     calc_rank = torch.argmax(mask.int()).item() + 1
-                    final_rank = max(min(calc_rank, rank), 4)
+                    final_rank = max(min(calc_rank, rank), 1)
         
-        # Effective rank check (ignore singular values near zero)
-        effective_rank = (S > 1e-5).sum().item()
-        final_rank = max(min(final_rank, effective_rank), 1)
-        final_rank = min(final_rank, U.shape[1])
+        final_rank = min(final_rank, U.shape[1], S.shape[0])
         
         U = U[:, :final_rank]
-        S = S[:final_rank]
+        S_sliced = S[:final_rank]
         V = V[:, :final_rank]
-        Vh = V.T 
         
-        sqrt_S = torch.diag(torch.sqrt(S))
-        Down = (sqrt_S @ Vh).to(orig_dtype)
+        sqrt_S = torch.diag(torch.sqrt(S_sliced))
+        Down = (sqrt_S @ V.mT).to(orig_dtype)
         Up = (U @ sqrt_S).to(orig_dtype)
         
         return Down, Up, final_rank
 
     @staticmethod
     def resize_lora(ld, lu, new_rank, auto_rank_threshold=0.0):
-        # Cast to float for math stability
+        # Перемножаем в Float32
         delta = lu.float() @ ld.float()
-        return MathLinalg.svd_decomposition(delta, new_rank, auto_rank_threshold, clamp_threshold=1e-8)
+        return MathLinalg.svd_decomposition(delta, new_rank, auto_rank_threshold)
 
     @staticmethod
     def get_spectrum(delta_w: torch.Tensor, rank_hint: int = None) -> torch.Tensor:
-        d_float = torch.nan_to_num(delta_w.float())
+        d_float = torch.nan_to_num(delta_w.float(), nan=0.0)
         min_dim = min(d_float.shape)
         q = min(rank_hint, min_dim) if rank_hint else min(512, min_dim)
         try:
+            # svd_lowrank обычно работает в Float32 даже на GPU
             _, S, _ = torch.svd_lowrank(d_float, q=q, niter=2)
-            return S.cpu()
+            return S.detach().cpu()
         except:
             return torch.zeros(q)
-
-    @staticmethod
-    def orthogonalize_rows_against_vector(matrix: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
-        m_f = torch.nan_to_num(matrix.float())
-        v_f = torch.nan_to_num(vector.float())
-        
-        if m_f.shape[1] != v_f.shape[0]:
-            return matrix 
-            
-        v_norm_sq = torch.dot(v_f, v_f)
-        if v_norm_sq < 1e-9:
-            return matrix
-            
-        dots = m_f @ v_f 
-        scalars = dots / v_norm_sq
-        projections = torch.outer(scalars, v_f)
-        
-        result = m_f - projections
-        return result.to(matrix.dtype)

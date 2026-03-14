@@ -15,17 +15,22 @@ def run_analysis(ws_in, disk_in, up_in, progress=gr.Progress()):
     if not inputs: 
         return None, None, None, "<div style='color:red'>❌ Error: No model selected.</div>", [], gr.update(choices=[], value=None)
     
-    target = inputs[0] # String (path or workspace name)
+    target = inputs[0]
     service = AnalyzerService()
     
     data = None
-    # We pass the string directly, AnalyzerService and ModelLoader will handle the resolution
+    error_msg = ""
+    
+    # ПРОБРОС ОШИБОК ИЗ СЕРВИСА В UI
     for p, m, res in service.analyze(target):
         progress(p, desc=m)
+        if "Error:" in m:
+            error_msg = m
         if res: data = res
     
     if not data or not data.get("spectrum"): 
-        return None, None, None, "<div style='color:red'>❌ Analysis failed.</div>", [], gr.update(choices=[], value=None)
+        err_text = error_msg if error_msg else "Unknown failure. Check console logs."
+        return None, None, None, f"<div style='color:red'>❌ {err_text}</div>", [], gr.update(choices=[], value=None)
 
     clean_spectrum = [float(x) for x in data["spectrum"]]
     df_spectrum = pd.DataFrame({
@@ -86,17 +91,18 @@ def run_analysis(ws_in, disk_in, up_in, progress=gr.Progress()):
     return df_spectrum, df_energy, heatmap_img, report_html, recommendations, dropdown_update
 
 def apply_recommendation(recommendations, selected_title, current_file, current_drop):
-    if not recommendations or not selected_title: return [gr.update()] * 23
+    if not recommendations or not selected_title: return [gr.update()] * 25
     target_rec = next((r for r in recommendations if r.title == selected_title), None)
-    if not target_rec: return [gr.update()] * 23
+    if not target_rec: return [gr.update()] * 25
 
     p = target_rec.params
     def val(key, default=gr.update()): return p[key] if key in p else default
     
-    return [
+    return[
         gr.Tabs(selected="Morph"), 
         gr.update(), gr.update(), gr.update(),
-        val("eq_global"), val("eq_in"), val("eq_mid"), val("eq_out"), False,
+        val("eq_global"), val("eq_in"), val("eq_mid"), val("eq_out"), 
+        val("eq_adapter", 1.0), val("eq_other", 1.0), False,
         val("temperature"), val("fft_cutoff"), val("clamp_quantile"), val("fix_alpha_chk", True),
         val("spectral_enabled", False), val("spectral_threshold", 0.1), val("spectral_remove_structure", False), 
         val("spectral_adaptive", False), val("dare_enabled", False), val("dare_rate", 0.1), 

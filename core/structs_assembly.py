@@ -4,6 +4,7 @@ import copy
 from typing import Dict, Optional, Tuple, Any, List
 from .math import MathKernel
 from .format_handler import FormatHandler
+from .model_specs import ModelRegistry
 
 class LoRAModule:
     """
@@ -39,47 +40,22 @@ class LoRAModule:
     def decompose(self):
         """Performs SVD if not already done."""
         if self.is_decomposed: return
-        
-        # Reconstruct delta
-        # Cast to float for precision
         d_float = self.down.float()
         u_float = self.up.float()
-        
-        # Scale by alpha/rank if needed, but usually we decompose the raw weight product
-        # and handle alpha separately. Here we decompose the raw matrix product.
         delta = u_float @ d_float
-        
-        # SVD
-        # We use a safe rank estimation
         u, s, vh = torch.linalg.svd(delta, full_matrices=False)
-        
         self.u = u
         self.s = s
         self.vh = vh
         self.is_decomposed = True
-        
-        # Clear raw weights to save memory if needed, 
-        # but usually we keep them until modification.
-        # self.down = None
-        # self.up = None
 
     def compose(self):
         """Reconstructs Down/Up from SVD state."""
         if not self.is_decomposed: return
-
-        # Reconstruct from U, S, Vh
-        # Down = sqrt(S) @ Vh
-        # Up = U @ sqrt(S)
-        
         sqrt_s = torch.diag(torch.sqrt(self.s))
-        
-        # Keep original dtype
         target_dtype = self.down.dtype if self.down is not None else torch.bfloat16
-        
         self.down = (sqrt_s @ self.vh).to(dtype=target_dtype)
         self.up = (self.u @ sqrt_s).to(dtype=target_dtype)
-        
-        # Reset cache
         self.is_decomposed = False
         self.u = None
         self.s = None
@@ -88,11 +64,9 @@ class LoRAModule:
     def apply_scale(self, factor: float):
         """Efficiently scales the module."""
         if factor == 1.0: return
-        
         if self.is_decomposed:
             self.s *= factor
         else:
-            # Scale Up matrix (arbitrary choice)
             self.up = (self.up.float() * factor).to(self.up.dtype)
 
     def clone(self):
@@ -115,10 +89,22 @@ class LoRAAssembly:
     Replaces the flat state_dict for internal processing.
     """
     def __init__(self):
-        self.modules: Dict[str, LoRAModule] = {} # Key: Normalized Base Name
-        self.others: Dict[str, torch.Tensor] = {} # Embeddings, biases, etc.
+        self.modules: Dict[str, LoRAModule] = {} 
+        self.others: Dict[str, torch.Tensor] = {} 
         self.metadata: Dict[str, str] = {}
-        self.key_map: Dict[str, Tuple[str, str]] = {} # BaseName -> (DownKey, UpKey) for reconstruction
+        self.key_map: Dict[str, Tuple[str, str, str]] = {} 
+
+    def get_raw_keys(self) -> List[str]:
+        """
+        Returns the original un-stripped keys to allow accurate architecture detection.
+        Crucial for ModelRegistry.detect() after normalization.
+        """
+        keys = list(self.others.keys())
+        for d, u, a in self.key_map.values():
+            if d: keys.append(d)
+            if u: keys.append(u)
+            if a: keys.append(a)
+        return keys
 
     @staticmethod
     def from_state_dict(state_dict: Dict[str, torch.Tensor], metadata: Dict[str, str] = None) -> 'LoRAAssembly':
@@ -126,7 +112,8 @@ class LoRAAssembly:
         assembly.metadata = metadata or {}
         
         keys = list(state_dict.keys())
-        groups = FormatHandler.group_keys(keys)
+        spec = ModelRegistry.get_spec(keys)
+        groups = FormatHandler.group_keys(keys, spec)
         
         processed_keys = set()
         
@@ -144,11 +131,8 @@ class LoRAAssembly:
             
             mod = LoRAModule(ld, lu, alpha)
             assembly.modules[grp.base_name] = mod
-            
-            # Store naming convention for export
             assembly.key_map[grp.base_name] = (grp.down_key, grp.up_key, grp.alpha_key)
 
-        # Store remaining keys (biases, norms, embeddings)
         for k, v in state_dict.items():
             if k not in processed_keys:
                 assembly.others[k] = v
@@ -157,39 +141,29 @@ class LoRAAssembly:
 
     def to_state_dict(self) -> Dict[str, torch.Tensor]:
         sd = {}
+        # Get spec based on stored raw keys to ensure correct prefixing
+        spec = ModelRegistry.get_spec(self.get_raw_keys())
         
-        # 1. Modules
         for base_name, mod in self.modules.items():
             if mod.is_decomposed:
                 mod.compose()
             
-            # Retrieve original key names or generate standard ones
             if base_name in self.key_map:
                 d_key, u_key, a_key = self.key_map[base_name]
-                
-                # FIX: If a_key was None (missing in source), generate a valid one
                 if a_key is None:
-                    if d_key.endswith("lora_down.weight"):
-                        a_key = d_key.replace("lora_down.weight", "alpha")
-                    elif d_key.endswith("down.weight"):
-                        a_key = d_key.replace("down.weight", "alpha")
-                    else:
-                        # Fallback for weird keys
-                        a_key = f"{d_key.rsplit('.', 1)[0]}.alpha"
+                    if d_key.endswith("lora_down.weight"): a_key = d_key.replace("lora_down.weight", "alpha")
+                    elif d_key.endswith("down.weight"): a_key = d_key.replace("down.weight", "alpha")
+                    else: a_key = f"{d_key.rsplit('.', 1)[0]}.alpha"
             else:
-                # Fallback naming (Kohya style)
-                safe_name = FormatHandler.convert_to_kohya_key(base_name)
+                safe_name = FormatHandler.convert_to_kohya_key(base_name, spec)
                 d_key = f"{safe_name}.lora_down.weight"
                 u_key = f"{safe_name}.lora_up.weight"
                 a_key = f"{safe_name}.alpha"
 
             sd[d_key] = mod.down
             sd[u_key] = mod.up
-            
-            # Always save alpha
             sd[a_key] = torch.tensor(mod.alpha, dtype=mod.down.dtype)
 
-        # 2. Others
         for k, v in self.others.items():
             sd[k] = v
             
@@ -199,11 +173,6 @@ class LoRAAssembly:
         new_asm = LoRAAssembly()
         new_asm.metadata = copy.deepcopy(self.metadata)
         new_asm.key_map = copy.deepcopy(self.key_map)
-        
-        for k, v in self.modules.items():
-            new_asm.modules[k] = v.clone()
-            
-        for k, v in self.others.items():
-            new_asm.others[k] = v.clone()
-            
+        for k, v in self.modules.items(): new_asm.modules[k] = v.clone()
+        for k, v in self.others.items(): new_asm.others[k] = v.clone()
         return new_asm

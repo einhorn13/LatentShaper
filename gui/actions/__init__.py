@@ -15,6 +15,11 @@ from .resources import (
     update_resources,
     update_mini_queue,
     refresh_queue_table,
+    handle_history_interaction,
+    cancel_task,
+    bulk_cancel_pending,
+    bulk_clear_finished,
+    recall_parameters,
     clear_queue_history
 )
 

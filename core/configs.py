@@ -25,6 +25,8 @@ class MorphConfig(BaseConfig):
     eq_in: float = 1.0
     eq_mid: float = 1.0
     eq_out: float = 1.0
+    eq_adapter: float = 1.0  # NEW: For LLM Adapters
+    eq_other: float = 1.0    # NEW: For unclassified blocks
     eq_interpolate: bool = False
     # Dynamics
     temperature: float = 1.0
